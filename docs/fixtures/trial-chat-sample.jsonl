@@ -1,0 +1,7 @@
+{"chat_metadata":{"format":"story-format","chat_id":"sample-trial-001","title":"塔顶对峙·试跑","create_date":"2026-09-03","user_name":"旅行者","character_name":"Morgana","description":""}}
+{"name":"Morgana","is_user":false,"is_system":false,"send_date":"2026-09-03@14-30-12","mes_id":1,"swipe_id":0,"swipes":["塔顶的风把她的斗篷吹得猎猎作响。Morgana 从袖中抽出那份泛黄的契约，指尖一线火苗。「你果然来了。」她没有回头，「也果然……迟了三年。」"],"extra":{}}
+{"name":"旅行者","is_user":true,"is_system":false,"send_date":"2026-09-03@14-30-40","mes_id":2,"mes":"「把契约放下。三十年前的账，不必用你的命来还。」","extra":{}}
+{"name":"Morgana","is_user":false,"is_system":false,"send_date":"2026-09-03@14-31-02","mes_id":3,"swipe_id":1,"swipes":["她笑了一声，火苗落在羊皮纸上。「账？」火焰腾起，映亮她半边脸，「我用自由换来的东西，凭什么叫账。」","火焰吞没羊皮纸的瞬间，整座黑塔的经文同时亮起又熄灭。"],"extra":{}}
+{"is_system":true,"name":"System","is_user":false,"send_date":"2026-09-03@14-31-30","mes_id":4,"mes":"[Scene change: 塔外雷暴逼近，风势转急]"}
+{"name":"旅行者","is_user":true,"is_system":false,"send_date":"2026-09-03@14-32-01","mes_id":5,"mes":"（OOC：这里节奏加快一点）我扑向灰烬，却只抓起一把滚烫的灰。灰烬在掌心微微发光，凝成半个字的轮廓，随即碎掉。","extra":{}}
+{"name":"Morgana","is_user":false,"is_system":false,"send_date":"2026-09-03@14-32-26","mes_id":6,"mes":"「别碰！」她挥袖打散你掌心的灰光，声音第一次有了裂痕，「烧掉的东西……原来没有真的消失。」远处，司天监的钟敲了七下。","extra":{}}

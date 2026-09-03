@@ -1,0 +1,30 @@
+{
+  "name": "story-studio",
+  "private": true,
+  "version": "0.1.0",
+  "description": "AI 互动小说创作工具：构思访谈 → 总纲/细纲 → 试跑 → 台账",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc --noEmit && vite build",
+    "typecheck": "tsc --noEmit",
+    "build:logic": "tsc -p tsconfig.logic.json",
+    "test:logic": "npm run build:logic && node scripts/run-tests.mjs",
+"test:fixtures": "npm run build:logic && node scripts/probe-fixtures.mjs"
+  },
+  "dependencies": {
+    "dexie": "^4.0.8",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1"
+  },
+  "devDependencies": {
+    "@types/react": "^18.3.12",
+    "@types/react-dom": "^18.3.1",
+    "@vitejs/plugin-react": "^4.3.4",
+    "typescript": "^5.6.3",
+    "vite": "^5.4.11"
+  },
+  "allowScripts": {
+    "esbuild@0.21.5": true
+  }
+}

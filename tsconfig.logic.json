@@ -1,0 +1,20 @@
+{
+  "compilerOptions": {
+    "rootDir": "src",
+    "outDir": "dist-test",
+    "module": "esnext",
+    "moduleResolution": "bundler",
+    "target": "es2022",
+    "lib": ["es2022", "dom"],
+    "skipLibCheck": true,
+    "strict": true
+  },
+  "include": [
+    "src/core/types.ts",
+    "src/st/**/*.ts",
+    "src/flow/**/*.ts",
+    "src/ai/json.ts",
+    "src/ai/tokenizer.ts",
+    "src/ai/prompts.ts"
+  ]
+}

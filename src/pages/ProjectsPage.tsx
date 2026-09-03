@@ -1,0 +1,218 @@
+// ============================================================
+// story-studio M0 — 作品管理页
+// M0 验收：新建作品 → 刷新页面数据不丢（IndexedDB 持久化）。
+// 页面只经 store/repos 门面读写数据；类型只 import type 自 core/types。
+// ============================================================
+import { useCallback, useEffect, useState, type FormEvent } from "react";
+import type { Project } from "../core/types";
+import * as repos from "../store/repos";
+import { InterviewPage } from "./InterviewPage";
+import { OutlinePage } from "./OutlinePage";
+import { TrialPage } from "./TrialPage";
+import { CastPage } from "./CastPage";
+import { LorePage } from "./LorePage";
+
+type WsTab = "interview" | "outline" | "trial" | "cast" | "lore";
+const WS_TABS: { id: WsTab; label: string }[] = [
+  { id: "interview", label: "构思访谈" },
+  { id: "outline", label: "大纲工作台" },
+  { id: "trial", label: "ST 试跑" },
+  { id: "cast", label: "人物卡" },
+  { id: "lore", label: "世界书" },
+];
+
+function formatTime(ts: number): string {
+  return new Date(ts).toLocaleString();
+}
+
+// ------------------------------------------------------------
+// 入口：作品列表 + 新建表单；点开进入 ProjectWorkspace（同文件组件）
+// ------------------------------------------------------------
+export function ProjectsPage() {
+  const [projects, setProjects] = useState<Project[]>([]);
+  const [loaded, setLoaded] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [open, setOpen] = useState<Project | null>(null);
+  const [title, setTitle] = useState("");
+  const [synopsis, setSynopsis] = useState("");
+
+  const refresh = useCallback(async () => {
+    try {
+      setProjects(await repos.listProjects());
+      setError(null);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setLoaded(true);
+    }
+  }, []);
+
+  useEffect(() => {
+    void refresh();
+  }, [refresh]);
+
+  if (open) {
+    return (
+      <ProjectWorkspace
+        project={open}
+        onBack={() => {
+          setOpen(null);
+          void refresh();
+        }}
+      />
+    );
+  }
+
+  const createProject = async (e: FormEvent<HTMLFormElement>) => {
+    e.preventDefault();
+    const t = title.trim();
+    if (!t) return;
+    await repos.createProject(t, synopsis.trim());
+    setTitle("");
+    setSynopsis("");
+    await refresh();
+  };
+
+  const removeProject = async (p: Project) => {
+    if (
+      !window.confirm(`删除作品《${p.title}》及其全部数据（大纲/人物/世界书/会话/台账）？此操作不可恢复。`)
+    ) {
+      return;
+    }
+    await repos.deleteProjectCascade(p.id);
+    await refresh();
+  };
+
+  return (
+    <div className="grid2">
+      <form className="panel" onSubmit={(e) => void createProject(e)}>
+        <h3>新建作品</h3>
+        <label className="field">
+          <span>标题（必填）</span>
+          <input value={title} onChange={(e) => setTitle(e.target.value)} placeholder="作品名" />
+        </label>
+        <label className="field">
+          <span>一句话梗概</span>
+          <input value={synopsis} onChange={(e) => setSynopsis(e.target.value)} placeholder="可留空，访谈后再补" />
+        </label>
+        <div className="row">
+          <button className="primary" type="submit" disabled={!title.trim()}>
+            新建
+          </button>
+        </div>
+      </form>
+
+      <section className="panel">
+        <h3>我的作品</h3>
+        {error && <p className="muted">加载失败：{error}</p>}
+        {!loaded && !error && <p className="muted">正在读取本地库…</p>}
+        {loaded && !error && projects.length === 0 && <p className="muted">还没有作品，先新建一个。</p>}
+        {projects.map((p) => (
+          <div className="panel" key={p.id}>
+            <div className="row">
+              <button className="primary" onClick={() => setOpen(p)}>
+                {p.title}
+              </button>
+              <span className="muted">更新于 {formatTime(p.updatedAt)}</span>
+              <button onClick={() => void removeProject(p)}>删除</button>
+            </div>
+            <p>{p.synopsis || <span className="muted">（暂无梗概）</span>}</p>
+          </div>
+        ))}
+      </section>
+    </div>
+  );
+}
+
+// ------------------------------------------------------------
+// 工作台壳：统计概览（从 repos 取） + 后续里程碑占位
+// ------------------------------------------------------------
+interface Stats {
+  characters: number;
+  loreEntries: number;
+  nodes: number;
+  sessions: number;
+}
+
+function ProjectWorkspace({ project, onBack }: { project: Project; onBack: () => void }) {
+  const [stats, setStats] = useState<Stats | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [wsTab, setWsTab] = useState<WsTab>("interview");
+
+  const refreshStats = useCallback(async () => {
+    try {
+      const [characters, loreEntries, nodes, sessions] = await Promise.all([
+        repos.listCharacters(project.id),
+        repos.listLoreEntries(project.id),
+        repos.listNodes(project.id),
+        repos.listSessions(project.id),
+      ]);
+      setStats({
+        characters: characters.length,
+        loreEntries: loreEntries.length,
+        nodes: nodes.length,
+        sessions: sessions.length,
+      });
+      setError(null);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    }
+  }, [project.id]);
+
+  useEffect(() => {
+    void refreshStats();
+  }, [refreshStats]);
+
+  const removeProject = async () => {
+    if (!window.confirm(`删除作品《${project.title}》及其全部数据？此操作不可恢复。`)) return;
+    await repos.deleteProjectCascade(project.id);
+    onBack();
+  };
+
+  const num = (n: number | undefined) => (stats ? String(n ?? 0) : "…");
+
+  return (
+    <div>
+      <div className="panel row">
+        <button onClick={onBack}>← 返回</button>
+        <strong>{project.title}</strong>
+        <span className="muted">更新于 {formatTime(project.updatedAt)}</span>
+        <button onClick={() => void removeProject()}>删除作品</button>
+      </div>
+      {project.synopsis && <p className="muted">{project.synopsis}</p>}
+      {error && <p className="muted">统计加载失败：{error}</p>}
+
+      <div className="grid2">
+        <div className="panel">
+          <span className="muted">人物</span>
+          <div>{num(stats?.characters)}</div>
+        </div>
+        <div className="panel">
+          <span className="muted">世界书词条</span>
+          <div>{num(stats?.loreEntries)}</div>
+        </div>
+        <div className="panel">
+          <span className="muted">大纲节点</span>
+          <div>{num(stats?.nodes)}</div>
+        </div>
+        <div className="panel">
+          <span className="muted">RP 会话</span>
+          <div>{num(stats?.sessions)}</div>
+        </div>
+      </div>
+
+      <div className="panel row">
+        {WS_TABS.map((t) => (
+          <button key={t.id} className={wsTab === t.id ? "tab active" : "tab"} onClick={() => setWsTab(t.id)}>
+            {t.label}
+          </button>
+        ))}
+      </div>
+      {wsTab === "interview" && <InterviewPage projectId={project.id} />}
+      {wsTab === "outline" && <OutlinePage projectId={project.id} />}
+      {wsTab === "trial" && <TrialPage projectId={project.id} />}
+      {wsTab === "cast" && <CastPage projectId={project.id} />}
+      {wsTab === "lore" && <LorePage projectId={project.id} />}
+    </div>
+  );
+}
