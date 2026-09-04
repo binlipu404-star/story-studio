@@ -47,6 +47,7 @@ import {
   STRUCTURE_NAMES,
   type OutlineStructure,
 } from "../ai/prompts";
+import { outlineBookJson, type OutlineBookScene } from "../flow/outlinebook";
 
 // ---------- 展示常量 ----------
 
@@ -114,6 +115,39 @@ function errMsg(e: unknown): string {
 }
 function isAbort(e: unknown): boolean {
   return e instanceof Error && e.name === "AbortError";
+}
+/** 下载一个文本文件：Blob + 临时 <a download>.click()，用完即 revoke */
+function downloadText(name: string, content: string): void {
+  const url = URL.createObjectURL(new Blob([content], { type: "text/plain;charset=utf-8" }));
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = name;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
+}
+/** 复制：优先 navigator.clipboard；失败/不可用降级隐藏 textarea select + execCommand */
+async function copyToClipboard(text: string): Promise<boolean> {
+  try {
+    await navigator.clipboard.writeText(text);
+    return true;
+  } catch {
+    /* 非安全上下文/权限拒绝：走降级 */
+  }
+  try {
+    const ta = document.createElement("textarea");
+    ta.value = text;
+    ta.style.position = "fixed";
+    ta.style.opacity = "0";
+    document.body.appendChild(ta);
+    ta.select();
+    const ok = document.execCommand("copy");
+    ta.remove();
+    return ok;
+  } catch {
+    return false;
+  }
 }
 function asRecord(v: unknown): Record<string, unknown> | null {
   return v && typeof v === "object" && !Array.isArray(v) ? (v as Record<string, unknown>) : null;
@@ -195,6 +229,17 @@ export function OutlinePage({ projectId }: { projectId: string }) {
   const [sceneProp, setSceneProp] = useState<SceneProposal | null>(null);
   const [mountChapterId, setMountChapterId] = useState("");
 
+  // 剧情世界书（ST）：勾选若干幕 → 一整本不绑角色的剧情推进书
+  const [bookSel, setBookSel] = useState<Set<string>>(new Set());
+  const [bookIncludeDone, setBookIncludeDone] = useState(false);
+  const [bookOut, setBookOut] = useState<{
+    json: string;
+    lines: string[];
+    fileName: string;
+    skippedDone: number;
+  } | null>(null);
+  const bookInit = useRef(false);
+
   const reload = useCallback(async () => {
     try {
       const [proj, rows, chars, led] = await Promise.all([
@@ -214,6 +259,79 @@ export function OutlinePage({ projectId }: { projectId: string }) {
       setLoaded(true);
     }
   }, [projectId]);
+
+  // ---------- 剧情世界书（ST · 幕粒度 · 不绑角色） ----------
+
+  /** 树序（叙事序）里的全部「幕」 */
+  const bookScenes = preorder(nodes).filter((n) => n.level === "scene");
+  /** 整幕退场判定：有节拍且全部已演（复盘里标记的 done） */
+  const isScenePlayed = (n: OutlineNode) => n.beats.length > 0 && n.beats.every((b) => b.done);
+
+  // 首次载入：默认勾上所有未演完的幕（此后不再覆盖用户的手动选择）
+  useEffect(() => {
+    if (!loaded || bookInit.current) return;
+    const scenes = preorder(nodes).filter((n) => n.level === "scene");
+    if (scenes.length === 0) return;
+    bookInit.current = true;
+    setBookSel(new Set(scenes.filter((n) => !(n.beats.length > 0 && n.beats.every((b) => b.done))).map((n) => n.id)));
+  }, [loaded, nodes]);
+
+  const toggleBookScene = (id: string) =>
+    setBookSel((prev) => {
+      const s = new Set(prev);
+      if (s.has(id)) s.delete(id);
+      else s.add(id);
+      return s;
+    });
+
+  const buildOutlineBook = () => {
+    setError("");
+    setInfo("");
+    const nameById = new Map(characters.map((c) => [c.id, c.name] as const));
+    const picked = preorder(nodes).filter((n) => n.level === "scene" && bookSel.has(n.id));
+    if (picked.length === 0) {
+      setError("先在左侧清单勾选至少一幕。");
+      return;
+    }
+    const scenes: OutlineBookScene[] = picked.map((n) => ({
+      nodeId: n.id,
+      title: n.title,
+      lineage:
+        lineageOf(nodes, n.id)
+          .filter((x) => x.level !== "scene")
+          .map((x) => x.title)
+          .join("·") || undefined,
+      intent: n.intent || undefined,
+      location: n.location || undefined,
+      timepoint: n.timepoint || undefined,
+      beats: n.beats,
+      castNames: n.cast.map((id) => nameById.get(id) ?? "").filter(Boolean),
+      done: isScenePlayed(n),
+    }));
+    try {
+      const { json, result } = outlineBookJson(scenes, { projectId, includeDone: bookIncludeDone });
+      if (result.entries.length <= 1) {
+        setBookOut(null);
+        setError("所选幕均已演完且无剩余指令——取消「跳过已演完」或去大纲里清除节拍的已演标记。");
+        return;
+      }
+      setBookOut({
+        json,
+        lines: result.scenesByEntry.map(
+          (s) => `${s.scene}｜触发：${s.keys.join("、")}${s.fallback ? "（弱触发 → 蓝灯常驻）" : ""}`,
+        ),
+        fileName: `worldbook-剧情推进-${project?.title || "project"}.json`,
+        skippedDone: result.skippedDone,
+      });
+    } catch (e) {
+      setError(errMsg(e));
+    }
+  };
+
+  const copyBook = async () => {
+    if (!bookOut) return;
+    setInfo((await copyToClipboard(bookOut.json)) ? "剧情世界书 JSON 已复制到剪贴板" : "复制失败，请改用下载");
+  };
 
   useEffect(() => {
     setSelectedId(null);
@@ -716,6 +834,91 @@ export function OutlinePage({ projectId }: { projectId: string }) {
               <p className="muted">还没有节点：用「生成总纲」批量生成，或「＋ 新卷」手动搭骨架。</p>
             )}
             <div style={{ maxHeight: "60vh", overflowY: "auto" }}>{renderTree(null, 0)}</div>
+          </div>
+
+          {/* ---------- 剧情世界书（ST · 幕粒度 · 不绑角色） ---------- */}
+          <div className="panel">
+            <div className="row" style={{ marginBottom: 6 }}>
+              <strong>🥁 剧情世界书（ST）</strong>
+              <span className="muted">{`每幕一条导演指令 · 不绑角色（用 {{char}}/{{user}} 变量）`}</span>
+            </div>
+            {loaded && bookScenes.length === 0 ? (
+              <p className="muted">还没有「幕」节点：先生成总纲或手动搭建，再回来成书。</p>
+            ) : (
+              <>
+                <div className="row" style={{ marginBottom: 4, flexWrap: "wrap" }}>
+                  <button onClick={() => setBookSel(new Set(bookScenes.map((n) => n.id)))}>全选</button>
+                  <button onClick={() => setBookSel(new Set())}>清空</button>
+                  <span className="muted">
+                    已选 {bookScenes.filter((n) => bookSel.has(n.id)).length}/{bookScenes.length} 幕
+                  </span>
+                  <label className="row" style={{ gap: 4, fontSize: 13, color: "var(--text)" }}>
+                    <input
+                      type="checkbox"
+                      checked={bookIncludeDone}
+                      onChange={(e) => setBookIncludeDone(e.target.checked)}
+                    />
+                    包含已演完的幕
+                  </label>
+                </div>
+                <div style={{ maxHeight: 190, overflowY: "auto", marginBottom: 8 }}>
+                  {bookScenes.map((n) => {
+                    const path = lineageOf(nodes, n.id)
+                      .filter((x) => x.level !== "scene")
+                      .map((x) => x.title)
+                      .join(" › ");
+                    return (
+                      <label
+                        key={n.id}
+                        className="row"
+                        style={{ gap: 6, fontSize: 13, color: "var(--text)", padding: "2px 0" }}
+                      >
+                        <input type="checkbox" checked={bookSel.has(n.id)} onChange={() => toggleBookScene(n.id)} />
+                        <span>{n.title || "（无名幕）"}</span>
+                        <span className="muted">
+                          {n.beats.length}拍{isScenePlayed(n) ? " · 已演完" : ""}
+                        </span>
+                        <span className="muted" style={{ marginLeft: "auto" }}>
+                          {path}
+                        </span>
+                      </label>
+                    );
+                  })}
+                </div>
+                <button className="primary" onClick={buildOutlineBook}>
+                  🥁 生成世界书
+                </button>
+                {bookOut && (
+                  <div style={{ marginTop: 8 }}>
+                    <pre
+                      style={{
+                        whiteSpace: "pre-wrap",
+                        wordBreak: "break-word",
+                        background: "var(--bg)",
+                        padding: 10,
+                        borderRadius: 8,
+                        fontSize: 12,
+                        margin: 0,
+                        maxHeight: 180,
+                        overflowY: "auto",
+                      }}
+                    >
+                      {`共 ${bookOut.lines.length} 幕成条${bookOut.skippedDone ? `（跳过已演完 ${bookOut.skippedDone} 幕）` : ""}\n${bookOut.lines.join("\n")}`}
+                    </pre>
+                    <div className="row" style={{ marginTop: 6 }}>
+                      <button onClick={() => downloadText(bookOut.fileName, bookOut.json)}>下载</button>
+                      <button onClick={() => void copyBook()}>复制 JSON</button>
+                    </div>
+                    <p className="muted" style={{ fontSize: 12 }}>
+                      在 ST「世界信息 World Info」面板导入即可整本管理：命中触发词时该幕指令深度注入、停留数轮后自动退场；
+                      同组互斥且靠前幕优先 → 剧情自动按幕推进。指令只指导推进、不定义角色，换任何角色卡都直接可用；
+                      节拍在复盘中标记已演后重新生成，已演完的幕会自动整条退场。
+                    </p>
+                  </div>
+                )}
+                {info && bookOut && <p className="muted">{info}</p>}
+              </>
+            )}
           </div>
 
           {sceneProp && (
