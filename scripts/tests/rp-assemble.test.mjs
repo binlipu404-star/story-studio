@@ -78,6 +78,14 @@ export default async function (t) {
     t.ok(!rpSystemPrompt(setup()).includes("台账"), "2. 缺省无台账段");
   }
 
+  // 2b. userNameHint（v3.1 用户实名段）：出现于画像之后、宏已替换、缺省不出现
+  {
+    const sys = rpSystemPrompt(setup({ userNameHint: "【玩家实名】一律用「{{user}}」称呼玩家。" }));
+    t.ok(sys.includes("【玩家实名】") && sys.includes("「黎明」称呼玩家"), "2b. 实名段出现且宏替换");
+    t.ok(sys.indexOf("身份：旅人") < sys.indexOf("【玩家实名】"), "2b. 位于画像之后");
+    t.ok(!rpSystemPrompt(setup()).includes("玩家实名"), "2b. 缺省无实名段");
+  }
+
   // 3. rpAssemble 默认预算：全保留，历史逐条映射
   {
     const turns = [t0("char", "开场白"), t0("user", "你好"), t0("char", "嗯"), t0("user", "地窖在哪")];

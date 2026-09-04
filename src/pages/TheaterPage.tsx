@@ -952,6 +952,27 @@ export function TheaterPage() {
                 <label title="场记 agent：读副本/对进度/标节拍/写本房间正典。物理上没有任何修改主纲的工具。">
                   <input type="checkbox" checked={activeRoom.config.agentEnabled ?? true} onChange={(e) => setConfig({ agentEnabled: e.target.checked })} /> 场记 agent
                 </label>
+                <label title="{{user}} 形象：用户名即画像名（v3.1-⑤）；切换即换用户名，历史里旧称呼由「用户实名」指令纠口">
+                  画像
+                  <select
+                    value={activeRoom.config.personaId || ""}
+                    disabled={roomLocked}
+                    onChange={(e) => {
+                      const pid = e.target.value;
+                      void saveRoom({
+                        config: { ...activeRoom.config!, personaId: pid },
+                        userName: personaName(pid),
+                      });
+                    }}
+                  >
+                    <option value="">画像 · 不设（用户名=读者）</option>
+                    {personas.map((p) => (
+                      <option key={p.id} value={p.id}>
+                        {p.name}
+                      </option>
+                    ))}
+                  </select>
+                </label>
                 <label>楼层定时
                   <input style={{ width: 46 }} value={String(activeRoom.config.ledgerCadence)} onChange={(e) => setConfig({ ledgerCadence: Math.max(0, Math.floor(Number(e.target.value) || 0)) })} /> 楼
                 </label>

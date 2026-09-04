@@ -30,6 +30,8 @@ export interface RpSetup {
   exampleDialogue?: string;
   /** 玩家画像块（personaPromptBlock 产物，可空） */
   personaBlock?: string;
+  /** v3.1：用户实名指令（画像名与历史旧称呼冲突时注入；支持 {{user}} 宏） */
+  userNameHint?: string;
   /** 作者注释（trialAuthorNote 产物，置尾、高优先） */
   authorNote?: string;
   /** 额外主指令（如「本幕戏剧目标」提示），插在主指令之后 */
@@ -104,7 +106,7 @@ export function paceDirective(pace: "tight" | "loose"): string {
 
 /** system 提示词分段（组装序）。priority=∞ 永不裁；有限值小者先裁。 */
 export interface RpSystemSection {
-  key: "roleDirective" | "pace" | "extra" | "loreBefore" | "card" | "persona" | "ledger" | "script" | "examples" | "loreAfter" | "authorNote";
+  key: "roleDirective" | "pace" | "extra" | "loreBefore" | "card" | "persona" | "userNameHint" | "ledger" | "script" | "examples" | "loreAfter" | "authorNote";
   label: string;
   text: string;
   priority: number;
@@ -138,6 +140,11 @@ export function rpSystemSections(setup: RpSetup, loreBefore = "", loreAfter = ""
 
   if (nonEmpty(setup.personaBlock)) {
     sections.push({ key: "persona", label: "用户画像", text: applyMacros(`【{{user}}（由用户扮演）】\n${setup.personaBlock!.trim()}`, charName, userName), priority: 30 });
+  }
+
+  // v3.1：用户实名指令——画像名与对话历史里的旧称呼打架时，以此处为准
+  if (nonEmpty(setup.userNameHint)) {
+    sections.push({ key: "userNameHint", label: "用户实名", text: applyMacros(setup.userNameHint!.trim(), charName, userName), priority: NEVER });
   }
   if (nonEmpty(setup.ledgerBlock)) {
     sections.push({ key: "ledger", label: "台账快照", text: `【台账快照·正典事实】\n${setup.ledgerBlock!.trim()}`, priority: 40 });

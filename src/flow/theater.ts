@@ -114,6 +114,14 @@ export function assembleRoom(input: RoomAssemblyInput): RoomAssembly {
   // v3.1-⑤ 用户名取决于画像：有画像用画像名，无画像回落房间存量名（旧房兼容）
   const uname = persona?.name?.trim() || room.userName || "读者";
   const personaBlock = persona ? personaPromptBlock(persona) : undefined;
+  // 玩家实名指令：画像名与对话历史里的旧称呼（老 greeting/旧用户名）冲突时，以此为准
+  const userNameHint = persona
+    ? [
+        `【玩家实名】用户扮演的玩家角色名叫「{{user}}」。`,
+        "- 你的叙述与任何角色的台词中，一律用「{{user}}」称呼玩家。",
+        "- 若上方对话历史或开场白里出现过别的称呼，那是旧记录：从现在起统一改称「{{user}}」，不要在正文里解释或提及这次改名。",
+      ].join("\n")
+    : undefined;
 
   const lead: Character | null = cfg && cfg.charId ? characters.find((c) => c.id === cfg.charId) ?? null : null;
   const charNameOf = (c: Character): string => c.name || "角色";
@@ -127,6 +135,7 @@ export function assembleRoom(input: RoomAssemblyInput): RoomAssembly {
         userName: uname,
         description: worldview ?? "自由即兴场景：以环境反应与配角插叙回应 {{user}}。",
         personaBlock,
+        userNameHint,
         authorNote: "（自由即兴房：无剧本。保持世界一致，把主动权交给 {{user}}。）",
         ledgerBlock,
         pace: room.pace,
@@ -180,6 +189,7 @@ export function assembleRoom(input: RoomAssemblyInput): RoomAssembly {
       scenario: lead.scenario || undefined,
       exampleDialogue: lead.profile.exampleLines.join("\n") || undefined,
       personaBlock,
+      userNameHint,
       authorNote: built.authorNote,
       ledgerBlock,
       scriptBlock: scriptText || undefined,
@@ -196,6 +206,7 @@ export function assembleRoom(input: RoomAssemblyInput): RoomAssembly {
       description: typeof nd.description === "string" ? nd.description : "",
       scenario: typeof nd.scenario === "string" ? nd.scenario || undefined : undefined,
       personaBlock,
+      userNameHint,
       authorNote: built.authorNote,
       ledgerBlock,
       scriptBlock: scriptText || undefined,
