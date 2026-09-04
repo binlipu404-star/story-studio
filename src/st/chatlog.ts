@@ -146,3 +146,33 @@ export function toTranscript(msgs: ParsedChatMessage[]): string {
   }
   return out.join("\n");
 }
+
+/**
+ * 反向导出（N5 小说化直通桥）：站内消息 → ST chat .jsonl（头行 + 逐条消息行）。
+ * 定位是「回流桥」而非 ST 全量复刻：字段取最小公共集（name/is_user/is_system/
+ * send_date/message），既能被本工具 parseStChat 原样吃回，也能直接送进
+ * st-novel-tool 的对话导入做小说化。
+ */
+export function toStChatJsonl(
+  opts: { userName: string; charName: string },
+  messages: { role: "user" | "char" | "system"; name: string; content: string; createdAt?: number }[],
+): string {
+  const head = {
+    chat_metadata: { user_name: opts.userName, title: `${opts.charName} · Story Studio`, create_date: new Date().toISOString() },
+  };
+  const lines = [JSON.stringify(head)];
+  for (const m of messages ?? []) {
+    if (!m || !m.content.trim()) continue;
+    lines.push(
+      JSON.stringify({
+        name: m.name || (m.role === "user" ? opts.userName : opts.charName),
+        is_user: m.role === "user",
+        is_system: m.role === "system",
+        send_date: new Date(m.createdAt ?? Date.now()).toISOString(),
+        mes: m.content, // ST 原生字段
+        message: m.content, // 宽松读取端（st-novel-tool 等）通用字段
+      }),
+    );
+  }
+  return lines.join("\n");
+}

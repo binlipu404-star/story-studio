@@ -35,7 +35,7 @@ import { ledgerFacts } from "../flow/snapshot";
 import { RpRunner } from "../components/RpRunner";
 import { exportCardV2 } from "../st/card";
 import { exportLorebookGlobal } from "../st/lorebook";
-import { parseStChat, toTranscript, type ParsedChatMessage } from "../st/chatlog";
+import { parseStChat, toStChatJsonl, toTranscript, type ParsedChatMessage } from "../st/chatlog";
 import { personaPromptBlock, sessionRecapPrompt } from "../ai/prompts";
 import { chatJSON } from "../ai/client";
 import { loadAppConfig } from "../ai/config";
@@ -811,6 +811,20 @@ export function TrialPage({ projectId }: { projectId: string }) {
                   disabled={rpSession?.id === s.id}
                 >
                   续写
+                </button>
+                <button
+                  title="导出 ST chat .jsonl：可直接送 st-novel-tool 小说化，或导回本页复现"
+                  onClick={() =>
+                    downloadText(
+                      `transcript-${s.id.slice(0, 8)}.jsonl`,
+                      toStChatJsonl(
+                        { userName: s.userName, charName: s.messages.find((m) => m.role !== "user")?.name || "角色" },
+                        s.messages,
+                      ),
+                    )
+                  }
+                >
+                  ⬇ jsonl
                 </button>
                 {s.status !== "canon" && (
                   <button onClick={() => void markSessionStatus(s, "canon")} title="这一幕的演法被采纳为正典">

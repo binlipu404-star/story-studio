@@ -1,5 +1,5 @@
 // ST 聊天记录导入解析测试（chatlog.ts：parseStChat / toTranscript）
-import { parseStChat, toTranscript } from "../../dist-test/st/chatlog.js";
+import { parseStChat, toTranscript, toStChatJsonl } from "../../dist-test/st/chatlog.js";
 
 // ---------- fixture：JSONL（元数据头 + 普通消息 + swipe-only 消息 + 坏行 + System 行） ----------
 const JSONL = [
@@ -102,4 +102,24 @@ export default async function (t) {
 
   // ===== BOM + 首尾空白容错 =====
   t.eq(parseStChat("\uFEFF  " + JSONL + "\n\n").length, 4, "BOM 与首尾空白不影响解析");
+
+  // ===== N5 反向导出：toStChatJsonl（小说化直通桥） =====
+  {
+    const msgs = [
+      { role: "char", name: "薇薇安", content: "灯不能灭。", createdAt: 1 },
+      { role: "user", name: "黎明", content: "我来守。", createdAt: 2 },
+      { role: "system", name: "", content: "（旁路系统条）", createdAt: 3 },
+      { role: "user", name: "黎明", content: "   ", createdAt: 4 }, // 空白丢弃
+    ];
+    const text = toStChatJsonl({ userName: "黎明", charName: "薇薇安" }, msgs);
+    const lines = text.split("\n");
+    t.eq(lines.length, 4, "jsonl：头行 + 3 条有效消息（空白丢弃）");
+    t.ok(lines[0].includes("\"chat_metadata\""), "jsonl：ST 式元数据头");
+    const row = JSON.parse(lines[1]);
+    t.ok(row.mes === "灯不能灭。" && row.message === "灯不能灭。", "jsonl：mes/message 双写");
+    t.eq(row.is_user, false, "jsonl：is_user 方向正确");
+    const back = parseStChat(text);
+    t.eq(back.length, 3, "jsonl：自家解析器原样吃回（system 条也在）");
+    t.eq(back[1].content, "我来守。", "jsonl：往返内容一致");
+  }
 }

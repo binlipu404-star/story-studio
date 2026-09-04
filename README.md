@@ -55,8 +55,8 @@ DeepSeek 官方兼容端点可直接用；第三方网关未开 CORS 时请在�
 
 ## 状态
 
-**M0~M4 + M7 已交付；规划 v2 的 N1（台账）/ N2（站内 RP）/ N3（纠偏闭环）/ N6（RP 剧场·自动台账）已落地，N5 完成 bundle 导出（小说化直通待做）。**
-测试基线：逻辑测试 536 全绿（typecheck 零错误 / 生产构建通过）。
+**M0~M4 + M7 已交付；规划 v2 的 N1（台账）/ N2（站内 RP）/ N3（纠偏闭环）/ N6（RP 剧场·自动台账）已落地，N5 完成 bundle 导出与小说化 jsonl 直通。**
+测试基线：逻辑测试 542 全绿（typecheck 零错误 / 生产构建通过）。
 双击 `start-story-studio.bat` 一键启动（http://localhost:5199）。
 手工验收步骤见《验收清单.md》，测试素材在 docs/fixtures/（世界书样本、试跑记录样本、真实 PNG 卡在工作区 素材/）。
 **施工规划 v2（现状盘点 + N1~N5 新里程碑）见 [docs/ROADMAP.md](docs/ROADMAP.md)**；

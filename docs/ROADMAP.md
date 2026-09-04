@@ -73,7 +73,7 @@ v0.1 遗留小决策已被现实回答：#4 RP 视角=单 {{user}} 角色扮演�
 
 ### N5 打磨（原 M8）🟨 进行中
 - ✅ **项目 bundle 导出**：`flow/zip.ts`（纯逻辑 stored-zip 写入器：CRC32/中央目录/EOCD，测试含标准校验值与写读对拍）+ `flow/bundle.ts`（大纲 md/json+作品档案+台账+RP 转写+人物卡 V2+世界书）+ 作品页「📦 导出项目包(zip)」一键下载
-- ⬜ RP→小说化直通（transcript 送 st-novel-tool 的桥/或轻润色）
+- ✅ **RP→小说化直通**：`toStChatJsonl`（ST chat .jsonl 反向导出，mes/message 双写、元数据头，自家解析器可原样吃回）+ 本幕会话「⬇ jsonl」按钮——产物直接送 st-novel-tool 小说化
 - ⬜ 外观抽取 6 卡兜底说明 UI；无头 e2e（可选）；Tauri 壳按需拍板
 
 ## 2. 节奏与门禁（不变项）
