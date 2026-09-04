@@ -6,6 +6,7 @@
 // ============================================================
 
 import type { BibleField, OutlineNode, Beat, LedgerRecord, ChatMessage, Persona } from "../core/types";
+import type { MasterOutlineJson } from "../flow/outline.js"; // 仅类型（type-only，编译后零依赖）
 
 // ---------- 通用小助手 ----------
 
@@ -128,6 +129,71 @@ export function masterOutlinePrompt(
 }
 
 /** 讨论/细化某个节点的草案（任意层级通用） */
+// ---------- 大纲共创访谈：一边访谈一边搭大纲（粗放，只定盘子） ----------
+
+/** 共创访谈的每轮 JSON 规格：回复 + 阶段 + 全量大纲草稿（形态同总纲，beats 恒空） */
+export const OUTLINE_COACH_SPEC =
+  '{"reply":"本轮自然回复（含下一个问题）","phase":"direction|structure|scenes|ready","ready":true或false,"draft":' +
+  MASTER_OUTLINE_SPEC +
+  "}";
+
+/**
+ * 共创访谈系统提示词：每轮重建（内嵌最新草稿），对话历史按普通消息携带。
+ * 粗放纪律：只谈整体大纲/剧情走向/细纲题目，节拍明确不在此产出。
+ */
+export function outlineCoachPrompt(fields: BibleField[], draft: MasterOutlineJson | null): string {
+  return [
+    "你是一位资深小说结构顾问，正通过轻松对话与作者一起搭建大纲：每轮问一个问题，同时更新大纲草稿。",
+    "访谈纪律（粗放）：只谈三类大事——整体大纲（卷数与结构里程碑）、剧情走向（给出 2~3 个带冲突与代价的方向供作者挑选或混合）、细纲题目（章与幕的标题＋一句话戏剧目标）。",
+    "严禁询问细枝末节：天气、服饰、配角、道具细节、场面内具体过程都不问——那些属于节拍与试跑阶段。",
+    "每轮只问一个问题，具体、有画面感；作者一句话就采纳进草稿，作者跑题先自然接话再把可取处提炼进草稿；走向分歧时给选项而不是审问。",
+    "草稿演进顺序：先搭卷框架（phase=direction）→ 定走向与关键转折（phase=structure）→ 逐卷列幕标题与目标（phase=scenes）；当每幕都有标题与 intent 时置 phase=ready、ready=true。",
+    "draft 始终输出全量（形态同总纲），但 beats 一律留空数组——节拍由后续的细纲填充单独完成，你不得抢跑。",
+    "cast 只列构思档案或人物库里已有的名字（如有），不确定就留空，不发明人名。",
+    "当 phase=ready：在 reply 里告诉作者后续三条路——应用到大纲树 / 让 AI 填充细纲 / 直接导出为剧情推进世界书。",
+    "每轮必须只输出这个 JSON（除此之外没有任何文字）：",
+    OUTLINE_COACH_SPEC,
+    "",
+    "构思档案（访谈须以此为基础，不推翻作者已确认的设定）：",
+    fieldsMarkdown(fields),
+    "",
+    "当前大纲草稿（null=尚未开搭；本轮请基于档案给出初稿并以一个问题开场）：",
+    draft ? JSON.stringify(draft) : "null",
+  ].join("\n");
+}
+
+/** 细纲填充：为树上已有题目/目标的空幕生成 3~8 个节拍 */
+export function sceneBeatsPrompt(
+  scene: OutlineNode,
+  ancestors: OutlineNode[],
+  prevScene: OutlineNode | null,
+  fields: BibleField[],
+): ChatMessage[] {
+  return [
+    {
+      role: "system",
+      content: [
+        "你是细纲编辑。作者已定下这一幕的标题与戏剧目标，你的任务是填 3~8 个节拍。",
+        "节拍必须具体到「谁做了什么、改变了什么局面」，禁止「感情升温」式状态描述；埋设/回收伏笔用（埋：…）/（收：…）内联标注。",
+        "上一幕的结尾如何接本幕的开局要在第一个节拍里体现；最后一拍留 RP 即兴空间（开决策点），不写死结局。",
+        '只输出 JSON：{"beats":["节拍1","节拍2",…]}',
+      ].join("\n"),
+    },
+    {
+      role: "user",
+      content: [
+        "构思档案：",
+        fieldsMarkdown(fields, 200),
+        "",
+        prevScene ? `上一幕：\n${nodeDigest(prevScene, { withBeats: true })}` : "上一幕：无（本作开场幕）",
+        "",
+        `待填充的幕（路径：${ancestors.map((a) => a.title).join(" › ") || "未挂载"}）：`,
+        nodeDigest(scene),
+      ].join("\n"),
+    },
+  ];
+}
+
 export function nodeDiscussPrompt(node: OutlineNode, ancestors: OutlineNode[], fields: BibleField[]): ChatMessage[] {
   return [
     {

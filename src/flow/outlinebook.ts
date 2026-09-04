@@ -18,6 +18,7 @@
 // ============================================================
 
 import type { Beat, LoreEntry } from "../core/types";
+import type { MasterOutlineJson } from "./outline.js";
 import { exportLorebookGlobal } from "../st/lorebook.js";
 
 /** 全部剧情条目同组：同轮多条命中时 ST 只保留权重最高的一条 */
@@ -271,4 +272,41 @@ export function outlineBookJson(
 ): { json: string; result: OutlineBookResult } {
   const result = outlineBookEntries(scenes, opts);
   return { json: JSON.stringify(exportLorebookGlobal(result.entries), null, 2), result };
+}
+
+/**
+ * 共创访谈的草稿（MasterOutlineJson 形态）→ 成书用的幕清单。
+ * 不建树也能出书：草稿里的幕没有节拍，条目仅含目标与时空（访谈阶段本就粗放）。
+ */
+export function draftToBookScenes(draft: MasterOutlineJson | null | undefined): OutlineBookScene[] {
+  const out: OutlineBookScene[] = [];
+  if (!draft || !Array.isArray(draft.volumes)) return out;
+  draft.volumes.forEach((v, vi) => {
+    const vt = (v?.title ?? "").trim() || `第${vi + 1}卷`;
+    const chapters = Array.isArray(v?.chapters) ? v.chapters : [];
+    chapters.forEach((ch, ci) => {
+      const ct = (ch?.title ?? "").trim() || `第${ci + 1}章`;
+      const scenes = Array.isArray(ch?.scenes) ? ch.scenes : [];
+      scenes.forEach((sc, si) => {
+        if (!sc) return;
+        const title = (sc.title ?? "").trim();
+        const intent = (sc.intent ?? "").trim();
+        if (!title && !intent) return;
+        out.push({
+          nodeId: `draft-${vi}-${ci}-${si}`,
+          title: title || `第${si + 1}幕`,
+          lineage: `${vt}·${ct}`,
+          intent: intent || undefined,
+          location: (sc.location ?? "").trim() || undefined,
+          timepoint: (sc.timepoint ?? "").trim() || undefined,
+          beats: [],
+          castNames: (Array.isArray(sc.cast) ? sc.cast : [])
+            .map((x) => (typeof x === "string" ? x.trim() : ""))
+            .filter(Boolean),
+          done: false,
+        });
+      });
+    });
+  });
+  return out;
 }

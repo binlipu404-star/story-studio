@@ -1,5 +1,6 @@
 // 剧情世界书（outlinebook）冒烟测试
-import { STORY_GROUP, STORY_PROTOCOL, outlineBookEntries, outlineBookJson, extractBeatKeys } from "../../dist-test/flow/outlinebook.js";
+import { STORY_GROUP, STORY_PROTOCOL, draftToBookScenes, outlineBookEntries, outlineBookJson, extractBeatKeys } from "../../dist-test/flow/outlinebook.js";
+import { outlineCoachPrompt, sceneBeatsPrompt } from "../../dist-test/ai/prompts.js";
 
 const SCENES = [
   {
@@ -74,4 +75,44 @@ export default async function (t) {
 
   // 8. 协议可关
   t.eq(outlineBookEntries(SCENES, { protocolEntry: false }).entries[0].comment.includes("幕 1/4"), true, "8. protocolEntry=false 首条即幕条目");
+
+  // 9. 草稿直通成书（共创访谈不建树也能出书）
+  const DRAFT = {
+    logline: "旧案重启",
+    volumes: [
+      {
+        title: "卷一",
+        chapters: [
+          {
+            title: "第一章",
+            scenes: [
+              { title: "雨夜档案馆", intent: "拿到旧卷宗", location: "档案馆", cast: ["摩根娜"] },
+              { title: "", intent: "" }, // 空幕跳过
+            ],
+          },
+        ],
+      },
+    ],
+  };
+  const ds = draftToBookScenes(DRAFT);
+  t.eq(ds.length, 1, "9. 空幕被跳过");
+  t.eq(ds[0].lineage, "卷一·第一章", "9. lineage 层级串");
+  t.eq(ds[0].beats.length, 0, "9. 访谈阶段节拍恒空");
+  t.eq(ds[0].castNames.join(","), "摩根娜", "9. cast 名字直通");
+  t.eq(draftToBookScenes(null).length, 0, "9. null 草稿 → 空表");
+  t.eq(outlineBookJson(ds).result.entries.length, 2, "9. 直通成书：协议+1幕");
+
+  // 10. 共创/填充提示词契约
+  const coach = outlineCoachPrompt([], null);
+  t.ok(coach.includes('"phase"') && coach.includes("null"), "10. 空草稿教练词含阶段规格与 null 初态");
+  t.ok(outlineCoachPrompt([], DRAFT).includes("雨夜档案馆"), "10. 草稿内嵌下一轮");
+  const beatsP = sceneBeatsPrompt(
+    { id: "s", projectId: "p", parentId: null, level: "scene", order: 0, title: "雨夜档案馆", intent: "拿到旧卷宗", beats: [], cast: [], foreshadows: [], status: "draft", revision: 1, createdAt: 0, updatedAt: 0 },
+    [{ id: "v", projectId: "p", parentId: null, level: "volume", order: 0, title: "卷一", intent: "", beats: [], cast: [], foreshadows: [], status: "draft", revision: 1, createdAt: 0, updatedAt: 0 }],
+    null,
+    [],
+  );
+  t.eq(beatsP.length, 2, "10. 填充提示 system+user 两条");
+  t.ok(beatsP[0].content.includes('{"beats"'), "10. 填充只要求 beats JSON");
+  t.ok(beatsP[1].content.includes("路径：卷一") && beatsP[1].content.includes("上一幕：无"), "10. 路径与开场幕说明");
 }

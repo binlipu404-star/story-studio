@@ -37,6 +37,7 @@ import {
   preorder,
   treeToMarkdown,
   validatePlacement,
+  type MasterOutlineJson,
 } from "../flow/outline.js";
 import { chatJSON } from "../ai/client";
 import { abortJob, startJob, useJobs } from "../core/jobBus";
@@ -44,10 +45,12 @@ import {
   masterOutlinePrompt,
   nextScenePrompt,
   nodeDiscussPrompt,
+  outlineCoachPrompt,
+  sceneBeatsPrompt,
   STRUCTURE_NAMES,
   type OutlineStructure,
 } from "../ai/prompts";
-import { outlineBookJson, type OutlineBookScene } from "../flow/outlinebook";
+import { draftToBookScenes, outlineBookJson, type OutlineBookScene } from "../flow/outlinebook";
 
 // ---------- 展示常量 ----------
 
@@ -240,6 +243,11 @@ export function OutlinePage({ projectId }: { projectId: string }) {
   } | null>(null);
   const bookInit = useRef(false);
 
+  // 大纲共创访谈：AI 每轮一问一边搭草稿（粗放：整体大纲/走向/细纲题目，beats 恒空）
+  const [coachMsgs, setCoachMsgs] = useState<{ role: "user" | "assistant"; content: string }[]>([]);
+  const [coachDraft, setCoachDraft] = useState<MasterOutlineJson | null>(null);
+  const [coachInput, setCoachInput] = useState("");
+
   const reload = useCallback(async () => {
     try {
       const [proj, rows, chars, led] = await Promise.all([
@@ -331,6 +339,139 @@ export function OutlinePage({ projectId }: { projectId: string }) {
   const copyBook = async () => {
     if (!bookOut) return;
     setInfo((await copyToClipboard(bookOut.json)) ? "剧情世界书 JSON 已复制到剪贴板" : "复制失败，请改用下载");
+  };
+
+  // ---------- 大纲共创访谈：一边访谈一边搭草稿 → 应用 / 填细纲 / 直通成书 ----------
+
+  const coachStats = (() => {
+    let v = 0;
+    let c = 0;
+    let s = 0;
+    for (const vol of coachDraft?.volumes ?? []) {
+      v++;
+      for (const ch of Array.isArray(vol?.chapters) ? vol.chapters : []) {
+        c++;
+        s += Array.isArray(ch?.scenes) ? ch.scenes.length : 0;
+      }
+    }
+    return { v, c, s };
+  })();
+
+  const sendCoach = async () => {
+    const text = coachInput.trim();
+    if (!text || !project) return;
+    const hist = coachMsgs;
+    const draftNow = coachDraft;
+    setCoachInput("");
+    setCoachMsgs((m) => [...m, { role: "user", content: text }]);
+    const r = await runAI("共创访谈", (signal) =>
+      chatJSON<unknown>(
+        [
+          { role: "system", content: outlineCoachPrompt(project.bible.fields, draftNow) },
+          ...hist,
+          { role: "user", content: text },
+        ],
+        { role: "writer", signal },
+      ),
+    );
+    if (!r.ok) return;
+    const rec = asRecord(r.value);
+    const reply = asStr(rec?.reply) || "（本轮模型未给出可读回复，可直接重发上一条）";
+    const draftVal = rec?.draft;
+    if (draftVal && typeof draftVal === "object" && !Array.isArray(draftVal)) {
+      setCoachDraft(draftVal as MasterOutlineJson);
+    }
+    setCoachMsgs((m) => [...m, { role: "assistant", content: reply }]);
+    if (rec?.ready === true || asStr(rec?.phase) === "ready") {
+      setInfo("大纲草稿已就绪：可「应用到大纲树」「AI 填充细纲」（先应用）或「导出为世界书」。");
+    }
+  };
+
+  const applyCoachDraft = async () => {
+    if (!coachDraft) return;
+    if (
+      nodes.length > 0 &&
+      !window.confirm("当前大纲非空：草稿将追加为新卷根节点（不动既有节点）。继续？")
+    ) {
+      return;
+    }
+    try {
+      const mapped = masterToNodes(coachDraft, projectId, {
+        charactersByName: charactersByNameMap(characters),
+        uid: repos.uid,
+      });
+      if (mapped.nodes.length === 0) {
+        setError("草稿里还没有任何卷/幕，先继续访谈再应用。");
+        return;
+      }
+      await db.outlineNodes.bulkAdd(mapped.nodes);
+      await reload();
+      setWarnings(mapped.warnings);
+      setInfo(
+        `草稿已应用 ${mapped.nodes.length} 个节点（卷/章/幕，状态=草案）。` +
+          (mapped.logline ? `logline：${mapped.logline}` : ""),
+      );
+    } catch (e) {
+      setError(errMsg(e));
+    }
+  };
+
+  /** 细纲填充：为树上所有「空幕」批量生成节拍（先应用草稿；逐个串行，可停止） */
+  const fillBeats = async () => {
+    if (!project) return;
+    const targets = preorder(nodes).filter((n) => n.level === "scene" && n.beats.length === 0);
+    if (targets.length === 0) {
+      setInfo("没有空节拍的幕：请先「应用到大纲树」，或所有幕已有节拍（细纲已填或手动写过）。");
+      return;
+    }
+    const fields = project.bible.fields;
+    const pre = preorder(nodes);
+    const allScenes = pre.filter((n) => n.level === "scene");
+    let filled = 0;
+    const r = await runAI(`AI 填充细纲（共 ${targets.length} 幕）`, async (signal) => {
+      for (const sc of targets) {
+        if (signal.aborted) break;
+        const prev = allScenes[allScenes.indexOf(sc) - 1] ?? null;
+        const value = await chatJSON<unknown>(
+          sceneBeatsPrompt(sc, lineageOf(nodes, sc.id).filter((x) => x.id !== sc.id), prev, fields),
+          { role: "writer", signal },
+        );
+        const rec = asRecord(value);
+        const beats = beatsFromStrings(Array.isArray(rec?.beats) ? (rec?.beats as unknown[]) : [], repos.uid);
+        if (beats.length > 0) {
+          await db.outlineNodes.update(sc.id, { beats, updatedAt: Date.now() });
+          filled++;
+        }
+      }
+      return filled;
+    });
+    if (r.ok) {
+      await reload();
+      setInfo(`AI 填充细纲完成：${filled}/${targets.length} 幕已写入节拍（停止或失败的幕保持空，可重试）。`);
+    }
+  };
+
+  /** 草稿直通成书：不建树也能导出剧情推进世界书（幕条目无节拍，仅目标与时空） */
+  const exportDraftBook = () => {
+    const scenes = draftToBookScenes(coachDraft);
+    if (scenes.length === 0) {
+      setError("大纲草稿里还没有可用的幕：继续访谈到有幕标题再导出。");
+      return;
+    }
+    try {
+      const { json, result } = outlineBookJson(scenes, { projectId });
+      setBookOut({
+        json,
+        lines: result.scenesByEntry.map(
+          (s) => `${s.scene}｜触发：${s.keys.join("、")}${s.fallback ? "（弱触发 → 蓝灯常驻）" : ""}`,
+        ),
+        fileName: `worldbook-剧情推进-${project?.title || "project"}.json`,
+        skippedDone: result.skippedDone,
+      });
+      setInfo("已从访谈草稿导出世界书——下载/复制见下方「剧情世界书」面板的结果区。");
+    } catch (e) {
+      setError(errMsg(e));
+    }
   };
 
   useEffect(() => {
@@ -821,6 +962,101 @@ export function OutlinePage({ projectId }: { projectId: string }) {
                 </>
               )}
             </div>
+          </div>
+
+          {/* ---------- 大纲共创访谈：AI 一边访谈一边搭大纲（粗放：只定盘子） ---------- */}
+          <div className="panel">
+            <div className="row" style={{ marginBottom: 6, flexWrap: "wrap" }}>
+              <strong>✍️ 大纲共创访谈</strong>
+              <span className="muted">每轮一问，只谈整体大纲/走向/细纲题目；草稿随对话生长</span>
+              {coachStats.s > 0 && (
+                <span className="muted" style={{ marginLeft: "auto" }}>
+                  草稿：{coachStats.v} 卷 · {coachStats.c} 章 · {coachStats.s} 幕
+                </span>
+              )}
+            </div>
+            {coachMsgs.length > 0 && (
+              <div
+                style={{
+                  maxHeight: 260,
+                  overflowY: "auto",
+                  display: "flex",
+                  flexDirection: "column",
+                  gap: 8,
+                  marginBottom: 8,
+                }}
+              >
+                {coachMsgs.map((m, i) => (
+                  <div
+                    key={i}
+                    style={{
+                      alignSelf: m.role === "user" ? "flex-end" : "flex-start",
+                      maxWidth: "92%",
+                      whiteSpace: "pre-wrap",
+                      wordBreak: "break-word",
+                      padding: "6px 10px",
+                      borderRadius: 10,
+                      border: "1px solid var(--line)",
+                      background: m.role === "user" ? "var(--accent)" : "var(--panel)",
+                      color: m.role === "user" ? "#fff" : undefined,
+                      fontSize: 13,
+                    }}
+                  >
+                    {m.content}
+                  </div>
+                ))}
+                {busy && <div className="muted" style={{ fontSize: 12 }}>⏳ {busy}中…</div>}
+              </div>
+            )}
+            <label className="field">
+              <span>聊聊想法、回答上一问 — Enter 发送，Shift+Enter 换行</span>
+              <textarea
+                rows={2}
+                value={coachInput}
+                disabled={!!busy}
+                placeholder="例：双男主，一桩旧案把两人重新卷进去，结局想要两败俱伤但留一线"
+                onChange={(e) => setCoachInput(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" && !e.shiftKey) {
+                    e.preventDefault();
+                    void sendCoach();
+                  }
+                }}
+                style={{ width: "100%" }}
+              />
+            </label>
+            <div className="row" style={{ flexWrap: "wrap" }}>
+              <button className="primary" onClick={() => void sendCoach()} disabled={!!busy || !coachInput.trim() || !project}>
+                {busy ? "进行中…" : "发送"}
+              </button>
+              <button onClick={stop} disabled={!busy}>
+                停止
+              </button>
+              <button onClick={() => void applyCoachDraft()} disabled={!!busy || coachStats.s === 0}>
+                应用到大纲树
+              </button>
+              <button onClick={() => void fillBeats()} disabled={!!busy}>
+                🪄 AI 填充细纲
+              </button>
+              <button onClick={exportDraftBook} disabled={!!busy || coachStats.s === 0}>
+                🥁 导出为世界书
+              </button>
+              {coachMsgs.length > 0 && !busy && (
+                <button
+                  onClick={() => {
+                    setCoachMsgs([]);
+                    setCoachDraft(null);
+                  }}
+                >
+                  重新开始
+                </button>
+              )}
+            </div>
+            <p className="muted" style={{ fontSize: 12 }}>
+              访谈只定盘子（节拍恒为空）。之后三选一或全要：「应用到大纲树」把草稿追加为新卷（状态=草案）；
+              「AI 填充细纲」为树上所有空幕批量生成 3~8 拍（先应用再填，可停止可重试）；
+              「导出为世界书」不建树直接把当前草稿导出为剧情推进世界书（幕条目仅含目标与时空）。
+            </p>
           </div>
 
           <div className="panel">
