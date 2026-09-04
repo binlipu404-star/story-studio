@@ -339,7 +339,9 @@ export function RpRunner({ setup, charName, userName, sceneLabel, greeting, disa
       setTurns(cp);
       setLiveReasoning("");
       settle(cp, summaryRef.current);
-      if (regenAbort && preserve) setAlts((prev) => prev ?? { list: [preserve[preserve.length - 1].content], idx: 0 });
+      if (regenAbort && preserve && preserve[preserve.length - 1].role === "char") {
+        setAlts((prev) => prev ?? { list: [preserve[preserve.length - 1].content], idx: 0 });
+      }
       if (!aborted) setError(errMsg(e));
     } finally {
       setRunning(false);
