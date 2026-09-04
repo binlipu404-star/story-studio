@@ -258,6 +258,18 @@ export interface RPSession {
   sandbox?: TheaterSandbox; // 自由即兴房：无剧本
   script?: ScriptSnapshot; // 剧本副本（沙盒房=空 scenes）
   progress?: Record<string, "done" | "skipped">; // 副本节拍完成标记（key=ScriptBeatRef.id；永不回写主纲）
+  config?: {
+    // 房间级配置快照（开台时由全局 prefs 落一份；面板可改，切房间互不污染）
+    charId: string; // "" = 旁白无卡
+    personaId: string; // "" = 不设
+    budgetTokens: number;
+    reserveTokens: number;
+    ledgerCadence: number; // 每 N 个用户楼层自动整理台账；0=关
+    borrowProjectLedger: boolean; // 本房间正典之外借用作品级台账
+    chapterIds?: ID[]; // chapters 模式的所选章（full/sandbox 无）
+    agentEnabled?: boolean; // 场记工具（undefined=true）
+    cadenceMark?: number; // 上次楼层整理时的用户楼层数（触发游标）
+  };
 }
 
 // ---------- 台账（M6 使用，M0 先落表） ----------

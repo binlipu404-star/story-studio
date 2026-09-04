@@ -16,6 +16,8 @@ export interface TheaterHandoff {
   charHint?: string;
   /** true = 载入后立即自动开台（「续写」跳转） */
   auto?: boolean;
+  /** 把这条试跑工作会话的对话导入新建房间（「续写（去剧场）」） */
+  sessionId?: string;
   ts: number;
 }
 
@@ -64,18 +66,21 @@ export function parseHandoff(
   if (typeof o !== "object" || o === null) return null;
   const r = o as Record<string, unknown>;
   if (r.kind !== expect.kind) return null;
-  if (r.projectId !== expect.projectId) return null;
+  if (typeof r.projectId !== "string" || !r.projectId) return null;
+  if (expect.projectId !== "*" && r.projectId !== expect.projectId) return null;
+  const pid = r.projectId;
   const ts = r.ts;
   if (typeof ts !== "number" || !Number.isFinite(ts)) return null;
   if (expect.now - ts > HANDOFF_TTL_MS || ts - expect.now > 60_000) return null;
   if (expect.kind === "theater") {
-    if (typeof r.nodeId !== "string" || !r.nodeId) return null;
+    if (typeof r.nodeId !== "string") return null; // "" = 无指定幕（作品级「导去剧场演」）
     return {
       kind: "theater",
-      projectId: expect.projectId,
+      projectId: pid,
       nodeId: r.nodeId,
       ...(typeof r.charHint === "string" && r.charHint ? { charHint: r.charHint } : {}),
       ...(r.auto === true ? { auto: true } : {}),
+      ...(typeof r.sessionId === "string" && r.sessionId ? { sessionId: r.sessionId } : {}),
       ts,
     };
   }
@@ -83,7 +88,7 @@ export function parseHandoff(
     if (typeof r.nodeId !== "string" || !r.nodeId) return null;
     return {
       kind: "recap",
-      projectId: expect.projectId,
+      projectId: pid,
       nodeId: r.nodeId,
       ...(typeof r.sessionId === "string" && r.sessionId ? { sessionId: r.sessionId } : {}),
       ts,
@@ -91,7 +96,7 @@ export function parseHandoff(
   }
   // correction
   if (typeof r.text !== "string" || !r.text.trim()) return null;
-  return { kind: "correction", projectId: expect.projectId, text: r.text, ts };
+  return { kind: "correction", projectId: pid, text: r.text, ts };
 }
 
 // ---------- localStorage 薄壳（浏览器端；Node 环境静默无操作） ----------
@@ -137,6 +142,19 @@ export function takeHandoff(kind: HandoffKind, projectId: string): Handoff | nul
     } catch {
       // 忽略
     }
+    return null;
+  }
+}
+
+/** 只看不消费（ProjectsPage 借 recap 投递自动打开对应工作台；消费仍归目标页）。 */
+export function peekHandoff(kind: HandoffKind, projectId: string): Handoff | null {
+  const s = storage();
+  if (!s) return null;
+  try {
+    const raw = s.getItem(handoffStorageKey(kind));
+    if (raw === null) return null;
+    return parseHandoff(raw, { kind, projectId, now: Date.now() });
+  } catch {
     return null;
   }
 }

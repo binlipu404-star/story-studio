@@ -33,6 +33,7 @@ export class StoryStudioDB extends Dexie {
   declare loreEntries: Table<LoreEntry, string>;
   declare sessions: Table<RPSession, string>;
   declare ledger: Table<LedgerRecord, string>;
+  declare meta: Table<{ key: string; value: unknown }, string>;
   declare personas: Table<Persona, string>;
 
   constructor() {
@@ -59,6 +60,8 @@ export class StoryStudioDB extends Dexie {
       sessions: "id, projectId, kind",
       ledger: "id, projectId, [projectId+status], roomId",
     });
+    // v4：元数据表（剧场自动写盘的目录句柄等；句柄作纯 value，勿建索引）
+    this.version(4).stores({ meta: "key" });
   }
 }
 

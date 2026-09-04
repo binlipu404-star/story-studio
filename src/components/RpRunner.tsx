@@ -35,6 +35,8 @@ const SEC_COLORS: Record<string, string> = {
 };
 
 export interface RpRunnerProps {
+  /** 预算初值（房间 config 驱动；组件挂载后用户可临时改） */
+  initialBudget?: { budgetTokens: number; reserveTokens: number };
   setup: RpSetup;
   charName: string;
   userName: string;
@@ -53,7 +55,7 @@ export interface RpRunnerProps {
   onBringBack: (turns: RpTurn[]) => void;
 }
 
-export function RpRunner({ setup, charName, userName, sceneLabel, greeting, disabled, initial, onPersist, onDigest, onBringBack }: RpRunnerProps) {
+export function RpRunner({ setup, charName, userName, sceneLabel, greeting, disabled, initial, initialBudget, onPersist, onDigest, onBringBack }: RpRunnerProps) {
   const [turns, setTurns] = useState<RpTurn[]>([{ role: "char", name: charName, content: greeting }]);
   const [summary, setSummary] = useState("");
   const [input, setInput] = useState("");
@@ -62,8 +64,8 @@ export function RpRunner({ setup, charName, userName, sceneLabel, greeting, disa
   const [note, setNote] = useState<string | null>(null);
   const [rollBusy, setRollBusy] = useState(false);
   const [showSys, setShowSys] = useState(false);
-  const [budgetT, setBudgetT] = useState(8192);
-  const [reserveT, setReserveT] = useState(768);
+  const [budgetT, setBudgetT] = useState(initialBudget?.budgetTokens ?? 8192);
+  const [reserveT, setReserveT] = useState(initialBudget?.reserveTokens ?? 768);
   /** 末条 char 消息的多候选（swipe）：list 全部候选文本，idx 当前显示者 */
   const [alts, setAlts] = useState<{ list: string[]; idx: number } | null>(null);
   const [editIdx, setEditIdx] = useState<number | null>(null);

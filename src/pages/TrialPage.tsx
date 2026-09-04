@@ -30,6 +30,7 @@ import {
 } from "../flow/outline";
 import { buildTrialPack, type TrialPack } from "../flow/trialpack";
 import { putHandoff, takeHandoff, type RecapHandoff } from "../flow/handoff";
+import { goTab } from "../flow/nav";
 import { exportCardV2 } from "../st/card";
 import { exportLorebookGlobal } from "../st/lorebook";
 import { parseStChat, toStChatJsonl, toTranscript, type ParsedChatMessage } from "../st/chatlog";
@@ -106,14 +107,7 @@ async function copyToClipboard(text: string): Promise<boolean> {
 // ============================================================
 // 主组件
 // ============================================================
-export function TrialPage({
-  projectId,
-  onGoTab,
-}: {
-  projectId: string;
-  /** 跨页签跳转（纠偏移交/续写 → RP 剧场） */
-  onGoTab: (tab: "theater" | "trial") => void;
-}) {
+export function TrialPage({ projectId }: { projectId: string }) {
   // ---- 数据底 ----
   const [project, setProject] = useState<Project | undefined>(undefined);
   const [nodes, setNodes] = useState<OutlineNode[]>([]);
@@ -489,7 +483,7 @@ export function TrialPage({
     if (!text || !scene) return;
     putHandoff({ kind: "correction", projectId, text });
     setCorrectionText("");
-    onGoTab("theater");
+    goTab("theater");
   };
 
   const lockScene = async () => {
@@ -686,7 +680,7 @@ export function TrialPage({
                   {s.rollingSummary ? ` · 前情摘要 ${s.rollingSummary.length} 字` : ""}
                 </span>
                 <button
-                  title="到 RP 剧场接着这条会话演（自动选幕选卡并开台）"
+                  title="把这条会话带进 RP 剧场：自动按当前大纲开一个房间并接着演"
                   onClick={() => {
                     putHandoff({
                       kind: "theater",
@@ -694,8 +688,9 @@ export function TrialPage({
                       nodeId: (s.nodeId ?? scene.id) as string,
                       charHint: [...s.messages].reverse().find((m) => m.role === "char")?.name,
                       auto: true,
+                      sessionId: s.id,
                     });
-                    onGoTab("theater");
+                    goTab("theater");
                   }}
                 >
                   续写（去剧场）

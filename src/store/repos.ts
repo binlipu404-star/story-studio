@@ -400,6 +400,24 @@ export async function editLedger(
   return db.ledger.get(id);
 }
 
+/** 删除单条台账（房间正典面板清理误写事实用；作品级台账慎用，UI 层负责 confirm）。 */
+export async function deleteLedger(id: ID): Promise<void> {
+  await db.ledger.delete(id);
+}
+
+// ============================================================
+// 元数据（剧场自动写盘目录句柄等；句柄作纯 value，勿建索引）
+// ============================================================
+
+export async function metaGet<T>(key: string): Promise<T | undefined> {
+  const row = await db.meta.get(key);
+  return row?.value as T | undefined;
+}
+
+export async function metaPut(key: string, value: unknown): Promise<void> {
+  await db.meta.put({ key, value });
+}
+
 // ============================================================
 // RP 会话
 // ============================================================

@@ -192,3 +192,36 @@ function childrenSorted(nodes: OutlineNode[], parentId: ID | null): OutlineNode[
 export function roomScope(scopeMode: TheaterScope | undefined): TheaterScope {
   return scopeMode === "chapters" ? "chapters" : "full";
 }
+
+/**
+ * 副本视角的伏笔欠账：setup 未被房间台账（foreshadow 类型且正文含 setup 关键片段）
+ * 或未勾节拍标记视为欠账。只认房间数据——剧本副本之外零依赖（chapters 模式的
+ * 「不敏感」正从这里成立：主纲改了也看不到）。
+ */
+export function snapshotDebt(
+  snapshot: ScriptSnapshot,
+  paidSetups: string[], // 房间台账中 foreshadow 记录的正文（视为已回收声明）
+): { sceneTitle: string; setup: string }[] {
+  const norm = (s: string): string => s.replace(/[\s，。！？、；：""''（）()《》【】…—-]/g, "").toLowerCase();
+  const paid = paidSetups.map(norm);
+  const out: { sceneTitle: string; setup: string }[] = [];
+  for (const sc of snapshot.scenes) {
+    for (const f of sc.foreshadows) {
+      const key = norm(f.setup);
+      if (key.length < 6) {
+        out.push({ sceneTitle: sc.title, setup: f.setup });
+        continue;
+      }
+      const isPaid = paid.some((p) => p.includes(key) || key.includes(p) && p.length >= 6);
+      if (!isPaid) out.push({ sceneTitle: sc.title, setup: f.setup });
+    }
+  }
+  return out;
+}
+
+/** 欠账块文本（注入 ledgerBlock 尾部；无欠账返回空串） */
+export function snapshotDebtText(debt: { sceneTitle: string; setup: string }[], cap = 12): string {
+  if (debt.length === 0) return "";
+  const lines = debt.slice(0, cap).map((d) => `- ${d.sceneTitle}：埋了「${d.setup}」，未见回收`);
+  return `【伏笔欠账（按剧本副本）】\n${lines.join("\n")}${debt.length > cap ? `\n（另有 ${debt.length - cap} 笔未列）` : ""}`;
+}

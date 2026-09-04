@@ -1,4 +1,5 @@
 import type { ChatMessage } from "../core/types";
+import type { AgentMessage, ToolCall, ToolSpec } from "../flow/agent";
 import { loadAppConfig } from "./config";
 import { extractJson } from "./json";
 
@@ -177,4 +178,138 @@ export async function chatJSON<T = unknown>(
       );
     }
   }
+}
+
+// ============================================================
+// 工具通道（v3-P3 场记 agent）：非流式 + OpenAI tools 多轮循环
+// ============================================================
+
+export interface ChatToolsStep {
+  round: number;
+  assistantText: string;
+  calls: { name: string; arguments: string; result: string }[];
+}
+
+export interface ChatToolsResult {
+  text: string; // 最终正文（无工具调用的那轮 content，或最后一轮）
+  steps: ChatToolsStep[]; // 活动流（UI 展示每一步调用与结果）
+  stopped: "final" | "max_rounds";
+}
+
+/** 端点不认识 tools 字段：调用方捕获后降级（场记退化为纯摘要整理） */
+export class ToolsUnsupportedError extends Error {}
+
+interface ApiResponseMessage {
+  role?: string;
+  content?: string | null;
+  tool_calls?: { id?: string; type?: string; function?: { name?: string; arguments?: string } }[];
+}
+
+async function postChatOnce(
+  body: Record<string, unknown>,
+  role: ChatRole,
+  signal?: AbortSignal,
+): Promise<ApiResponseMessage> {
+  const ep = loadAppConfig()[role];
+  if (!ep.baseURL) throw new Error("未配置 baseURL，请先到设置页填写");
+  if (!ep.model) throw new Error("未配置模型名（model），请先到设置页填写");
+  const base = ep.baseURL.replace(/\/+$/, "");
+  const res = await fetch(`${base}/chat/completions`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      ...(ep.apiKey ? { Authorization: `Bearer ${ep.apiKey}` } : {}),
+    },
+    body: JSON.stringify({ model: ep.model, ...body }),
+    ...(signal ? { signal } : {}),
+  });
+  if (!res.ok) {
+    let detail = "";
+    try {
+      detail = await res.text();
+    } catch {
+      /* 忽略 */
+    }
+    throw new Error(`AI 请求失败 ${res.status}: ${detail.slice(0, 300)}`);
+  }
+  const data = (await res.json()) as { choices?: { message?: ApiResponseMessage }[] };
+  return data.choices?.[0]?.message ?? {};
+}
+
+/**
+ * 场记 agent 多轮工具循环（非流式：整理动作不需要逐字流）。
+ * execute 同步返回给模型的结果文本（runScriptTool）。端点在**首轮请求**就因 tools
+ * 字段被拒（400/422/404 且未产生任何轮次）→ 抛 ToolsUnsupportedError 供上层降级。
+ */
+export async function chatTools(opts: {
+  messages: AgentMessage[];
+  tools: ToolSpec[];
+  execute: (call: ToolCall) => string;
+  role?: ChatRole;
+  maxRounds?: number; // 成本闸门：模型最多"思考-调用"多少轮
+  temperature?: number;
+  maxTokens?: number;
+  signal?: AbortSignal;
+  onStep?: (step: ChatToolsStep) => void;
+}): Promise<ChatToolsResult> {
+  const ep = loadAppConfig()[opts.role ?? "analyzer"];
+  const maxRounds = Math.max(1, Math.min(opts.maxRounds ?? 4, 10));
+  const msgs: AgentMessage[] = [...opts.messages];
+  const steps: ChatToolsStep[] = [];
+  let lastText = "";
+
+  for (let round = 1; round <= maxRounds; round++) {
+    let msg: ApiResponseMessage;
+    try {
+      msg = await postChatOnce(
+        {
+          messages: msgs,
+          temperature: opts.temperature ?? ep.temperature ?? 0.4,
+          ...(opts.maxTokens ?? ep.maxTokens ? { max_tokens: opts.maxTokens ?? ep.maxTokens } : {}),
+          tools: opts.tools,
+          tool_choice: "auto",
+          stream: false,
+        },
+        opts.role ?? "analyzer",
+        opts.signal,
+      );
+    } catch (e) {
+      const m = errMsg(e);
+      if (steps.length === 0 && /\b(400|404|422)\b/.test(m)) {
+        throw new ToolsUnsupportedError(`端点可能不支持 tools 字段：${m}`);
+      }
+      throw e;
+    }
+    const text = typeof msg.content === "string" ? msg.content : "";
+    const rawCalls = Array.isArray(msg.tool_calls) ? msg.tool_calls : [];
+    const calls: ToolCall[] = rawCalls
+      .filter((c) => c && typeof c.id === "string" && c.function && typeof c.function.name === "string")
+      .map((c) => ({
+        id: c.id as string,
+        type: "function" as const,
+        function: { name: c.function!.name as string, arguments: c.function!.arguments ?? "{}" },
+      }));
+    if (text) lastText = text;
+
+    if (calls.length === 0) {
+      return { text: text || lastText, steps, stopped: "final" };
+    }
+
+    // 执行并回灌
+    const step: ChatToolsStep = { round, assistantText: text, calls: [] };
+    msgs.push({ role: "assistant", content: text || null, tool_calls: calls });
+    for (const call of calls) {
+      let result: string;
+      try {
+        result = opts.execute(call);
+      } catch (e) {
+        result = `工具执行出错：${errMsg(e)}`;
+      }
+      step.calls.push({ name: call.function.name, arguments: call.function.arguments, result });
+      msgs.push({ role: "tool", tool_call_id: call.id, content: result });
+    }
+    steps.push(step);
+    opts.onStep?.(step);
+  }
+  return { text: lastText || "（达到轮次上限，场记停止本轮整理）", steps, stopped: "max_rounds" };
 }
