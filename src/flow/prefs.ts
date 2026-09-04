@@ -11,7 +11,7 @@ export interface TheaterPrefs {
   lastPersonaId: string; // "" = 不设
   pace: "tight" | "loose";
   scopeMode: "full" | "chapters";
-  ledgerCadence: number; // 每 N 个用户楼层整理一次台账；0=关
+  ledgerCadence: number; // 每 N 个用户楼层整理一次台账；0=关；1=每楼自动（v3.1 默认）
   budgetTokens: number;
   reserveTokens: number;
   borrowProjectLedger: boolean; // 房间正典之外是否手动借用作品级台账
@@ -25,7 +25,7 @@ export const DEFAULT_PREFS: TheaterPrefs = {
   lastPersonaId: "",
   pace: "loose",
   scopeMode: "full",
-  ledgerCadence: 0,
+  ledgerCadence: 1,
   budgetTokens: 8192,
   reserveTokens: 768,
   borrowProjectLedger: false,
@@ -94,5 +94,16 @@ export function savePrefs(p: TheaterPrefs): void {
     s.setItem(KEY, serializePrefs(p));
   } catch {
     // 存失败不影响会话（下次默认值重来）
+  }
+}
+
+/** 清除剧场偏好（设置页「清除进度记忆」调用） */
+export function clearPrefs(): void {
+  const s = storage();
+  if (!s) return;
+  try {
+    s.removeItem(KEY);
+  } catch {
+    /* 忽略 */
   }
 }

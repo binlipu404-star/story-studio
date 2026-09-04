@@ -212,6 +212,8 @@ export interface RPMessage {
   branchOf?: ID | null; // 分支父消息
   editedFrom?: ID | null;
   createdAt: number;
+  reasoning?: string; // 推理模型的思维链（可折叠查看；provider 未返回则无）
+  notes?: string[]; // 场记 agent 挂在本条上的活动（工具调用/进度标记），随消息持久
 }
 
 // ---------- RP 剧场：剧本副本与房间（v3 剧场独立化） ----------
@@ -264,7 +266,7 @@ export interface RPSession {
     personaId: string; // "" = 不设
     budgetTokens: number;
     reserveTokens: number;
-    ledgerCadence: number; // 每 N 个用户楼层自动整理台账；0=关
+    ledgerCadence: number; // 每 N 个用户楼层自动整理台账；0=关；1=每楼自动（v3.1 默认）
     borrowProjectLedger: boolean; // 本房间正典之外借用作品级台账
     chapterIds?: ID[]; // chapters 模式的所选章（full/sandbox 无）
     agentEnabled?: boolean; // 场记工具（undefined=true）
@@ -317,7 +319,7 @@ export interface ModelEndpoint {
 export interface AppConfig {
   writer: ModelEndpoint; // 创作模型（RP/大纲草稿）
   analyzer: ModelEndpoint; // 分析模型（抽取/判断/整理）
-  userName: string; // {{user}} 默认名
+  // v3.1-⑤：全局 userName 已删除——用户名取决于所用画像（persona）的名字
 }
 
 // ---------- AI 通用 ----------

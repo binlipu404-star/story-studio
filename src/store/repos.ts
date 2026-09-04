@@ -430,6 +430,24 @@ export async function saveSession(session: RPSession): Promise<RPSession> {
   return row;
 }
 
+/**
+ * v3.1-⑥ 事务内读-改-写（原子）：f 拿到的是**事务里最新的整行**，返回要落库的整行。
+ * 场记/聊天/配置多路并发写同一房间时，所有调用方都走这里就不会互相覆盖
+ * （谁先谁后取决于调用序；行内容永远基于最新库态合并）。
+ */
+export async function updateSession(
+  id: ID,
+  f: (cur: RPSession) => RPSession,
+): Promise<RPSession | undefined> {
+  return db.transaction("rw", db.sessions, async () => {
+    const cur = await db.sessions.get(id);
+    if (!cur) return undefined;
+    const next: RPSession = { ...f(cur), updatedAt: Date.now() };
+    await db.sessions.put(next);
+    return next;
+  });
+}
+
 /** 会话列表：最近活跃在前。 */
 export async function listSessions(projectId: ID): Promise<RPSession[]> {
   const rows = await db.sessions.where("projectId").equals(projectId).toArray();

@@ -37,6 +37,7 @@ import {
 import { estimateTokens } from "../ai/tokenizer";
 import * as repos from "../store/repos";
 import { db } from "../store/db";
+import { loadProgress, saveProgress } from "../flow/progress";
 
 // ---------- 小工具 ----------
 
@@ -199,6 +200,31 @@ export function LorePage({ projectId }: { projectId: string }) {
   useEffect(() => {
     void refresh();
   }, [refresh]);
+
+  // v3.1-② 进度记忆：展开编辑中的词条 + 调试台文本草稿，数据就绪（loaded）后恢复一次。
+  // 校验保存的 id 仍在现有词条列表里（防已删词条）；draft 由库内现值重建，不存草稿大对象。
+  // 注意：必须留在下方 if (!loaded) return 之前（Hook 顺序恒定）。
+  const selRestoredFor = useRef<string | null>(null);
+  useEffect(() => {
+    if (!loaded || selRestoredFor.current === projectId) return;
+    selRestoredFor.current = projectId;
+    const saved = loadProgress<{ editingId?: string; debugText?: string }>("lore", projectId);
+    if (!saved) return;
+    if (saved.editingId) {
+      const e = entries.find((x) => x.id === saved.editingId);
+      if (e) {
+        setEditingId(e.id);
+        setDraft(draftFromEntry(e));
+      }
+    }
+    if (typeof saved.debugText === "string" && saved.debugText) {
+      setDebugText(saved.debugText.slice(0, 4000));
+    }
+  }, [loaded, entries, projectId]);
+  useEffect(() => {
+    if (!loaded || selRestoredFor.current !== projectId) return;
+    saveProgress("lore", projectId, { editingId, debugText: debugText.slice(0, 4000) });
+  }, [loaded, projectId, editingId, debugText]);
 
   // 项目（重）载入后同步参数草稿
   useEffect(() => {

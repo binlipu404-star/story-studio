@@ -46,9 +46,13 @@ export interface RpSetup {
 
 /** 会话轮次：char 由模型产出、user 由用户输入、system 为旁路系统条 */
 export interface RpTurn {
+  /** 稳定 id（v3.1-⑥）：由持久层播种、组件内新建时补，删除/截断不错位 */
+  id?: string;
   role: "user" | "char" | "system";
   name: string;
   content: string;
+  reasoning?: string; // 推理模型思维链（v3.1-⑦：可折叠，默认折叠）
+  notes?: string[]; // 场记 agent 活动（工具调用/进度标记），折叠展示
 }
 
 export interface RpMessagesResult {

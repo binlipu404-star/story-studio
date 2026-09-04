@@ -52,6 +52,7 @@ import {
 } from "../ai/prompts";
 import { draftToBookScenes, outlineBookJson, type OutlineBookScene } from "../flow/outlinebook";
 import { ledgerFacts } from "../flow/snapshot";
+import { loadProgress, saveProgress } from "../flow/progress";
 
 // ---------- 展示常量 ----------
 
@@ -479,6 +480,22 @@ export function OutlinePage({ projectId }: { projectId: string }) {
     setSelectedId(null);
     void reload();
   }, [reload]);
+
+  // v3.1-② 进度记忆：选中节点 + 共创访谈输入框草稿，数据就绪（loaded）后恢复一次。
+  // 校验保存的 selectedId 仍在现有节点里（防已删节点）。
+  const selRestoredFor = useRef<string | null>(null);
+  useEffect(() => {
+    if (!loaded || selRestoredFor.current === projectId) return;
+    selRestoredFor.current = projectId;
+    const saved = loadProgress<{ selectedId?: string; coachInput?: string }>("outline", projectId);
+    if (!saved) return;
+    if (saved.selectedId && nodes.some((n) => n.id === saved.selectedId)) setSelectedId(saved.selectedId);
+    if (typeof saved.coachInput === "string" && saved.coachInput) setCoachInput(saved.coachInput.slice(0, 4000));
+  }, [loaded, nodes, projectId]);
+  useEffect(() => {
+    if (!loaded || selRestoredFor.current !== projectId) return;
+    saveProgress("outline", projectId, { selectedId, coachInput: coachInput.slice(0, 4000) });
+  }, [loaded, projectId, selectedId, coachInput]);
 
   // 总纲任务终结 → 播报并刷新；首次进入时已终结的任务记为已知
   // （它们的结果早已落库，上面的 reload 已把数据带进来，不重复播报）。

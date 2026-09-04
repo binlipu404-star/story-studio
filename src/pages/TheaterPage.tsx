@@ -30,7 +30,7 @@ import * as repos from "../store/repos";
 import { sceneSequence } from "../flow/outline";
 import type { RpTurn } from "../flow/rp";
 import { composeAuthorNote } from "../flow/rp";
-import { sanitizeDigest, type DigestLedgerItem } from "../flow/snapshot";
+import type { DigestLedgerItem } from "../flow/snapshot";
 import {
   buildScriptSnapshot,
   detectMainScriptUpdate,
@@ -41,15 +41,13 @@ import {
 } from "../flow/script";
 import { assembleRoom, newRoom, roomCurrentScene, roomSort } from "../flow/theater";
 import { loadPrefs, savePrefs } from "../flow/prefs";
+import { subscribeAgentRun, startOrganize, type OrganizeIO } from "../flow/agentrun";
 import { takeHandoff, putHandoff, type CorrectionHandoff, type TheaterHandoff } from "../flow/handoff";
 import { goTab } from "../flow/nav";
-import { rollingDigestPrompt } from "../ai/prompts";
-import { chatJSON, chatTools, ToolsUnsupportedError } from "../ai/client";
-import { loadAppConfig } from "../ai/config";
-import { SCRIPT_KIT_DIRECTIVE, SCRIPT_TOOLS, runScriptTool, toolLabel, type ToolCall } from "../flow/agent";
 import { RoomDiskWriter, fsSupported, roomFileName, type FsAutoStatus } from "../flow/fsauto";
 import { toStChatJsonl } from "../st/chatlog";
 import { RpRunner } from "../components/RpRunner";
+import { RoomLedgerPanel } from "../components/RoomLedgerPanel";
 
 function errMsg(e: unknown): string {
   return e instanceof Error ? e.message : String(e);
@@ -63,14 +61,6 @@ function downloadText(name: string, text: string) {
   a.click();
   setTimeout(() => URL.revokeObjectURL(url), 30_000);
 }
-
-const TYPE_LABEL: Record<string, string> = {
-  event: "事件",
-  item: "道具",
-  relation: "关系",
-  foreshadow: "伏笔",
-  worldstate: "世界态",
-};
 
 export function TheaterPage() {
   // ---- 全局数据 ----
@@ -100,10 +90,21 @@ export function TheaterPage() {
   const [note, setNote] = useState<string | null>(null);
   const [rpMountKey, setRpMountKey] = useState(0);
 
-  // ---- 场记 agent ----
+  // ---- 场记 agent（v3.1-①：run 活在模块注册表里，切页不中断；这里只是订阅视图）----
   const [agentSteps, setAgentSteps] = useState<string[]>([]);
   const [agentBusy, setAgentBusy] = useState(false);
   const [agentDowngraded, setAgentDowngraded] = useState(false);
+  useEffect(() => {
+    if (!activeId) return;
+    // 换房间先清空视图（有进行中/已完成的 run 时，subscribe 会立即回放其快照）
+    setAgentSteps([]);
+    setAgentDowngraded(false);
+    return subscribeAgentRun(activeId, (s) => {
+      setAgentSteps(s.steps);
+      setAgentBusy(s.running);
+      setAgentDowngraded(s.downgraded);
+    });
+  }, [activeId]);
 
   // ---- 本地写盘 ----
   const writerRef = useRef<RoomDiskWriter | null>(null);
@@ -232,6 +233,12 @@ export function TheaterPage() {
     void writerRef.current.restore();
   }
 
+  // 用户名＝所选画像的名字（v3.1-⑤：不再有全局用户名；无画像落「读者」）
+  const personaName = useCallback(
+    (personaId: string) => personas.find((p) => p.id === personaId)?.name?.trim() || "读者",
+    [personas],
+  );
+
   // ------------------------------------------------------------
   // 台面装配：只认房间自带数据（副本+房间正典），主纲渗透不进来
   // ------------------------------------------------------------
@@ -268,26 +275,61 @@ export function TheaterPage() {
 
   // ------------------------------------------------------------
   // 房间持久化（稳定落定才写；每次写盘全量 jsonl 快照）
+  // v3.1-⑥：per-room 串行写链——异步落库按调用序执行，后发的旧快照不会越过
+  // 先发的新快照；链内 updateSession 事务读-改-写，跨页签并发也只丢单项补丁。
   // ------------------------------------------------------------
+  const writeChains = useRef(new Map<string, Promise<unknown>>());
+  const queueRoomWrite = useCallback(
+    <T,>(roomId: string, fn: () => Promise<T>): Promise<T | undefined> => {
+      const prev = writeChains.current.get(roomId) ?? Promise.resolve();
+      const next = prev.then(fn, fn); // 前一个失败不拦后续
+      writeChains.current.set(roomId, next);
+      void next.finally(() => {
+        if (writeChains.current.get(roomId) === next) writeChains.current.delete(roomId);
+      });
+      return next;
+    },
+    [],
+  );
+
   const saveRoom = useCallback(
     async (patch: Partial<RPSession>): Promise<RPSession | null> => {
       if (!activeRoom) return null;
-      const next = { ...activeRoom, ...patch, updatedAt: Date.now() };
-      const saved = await repos.saveSession(next);
-      setRooms((prev) => roomSort(prev.map((r) => (r.id === saved.id ? saved : r))));
-      return saved;
+      const id = activeRoom.id;
+      // v3.1-⑥ 事务内读-改-写：场记/自动保存并发写同一房间不互相覆盖
+      const saved = await queueRoomWrite(id, () => repos.updateSession(id, (cur) => ({ ...cur, ...patch })));
+      if (saved) setRooms((prev) => roomSort(prev.map((r) => (r.id === saved.id ? saved : r))));
+      return saved ?? null;
     },
-    [activeRoom],
+    [activeRoom, queueRoomWrite],
   );
 
-  const turnsToMessages = (turns: RpTurn[], prev: RPMessage[]): RPMessage[] =>
-    turns.map((t, i) => ({
-      id: prev[i]?.id ?? repos.uid(),
-      role: t.role,
-      name: t.name,
-      content: t.content,
-      createdAt: prev[i]?.createdAt ?? Date.now(),
-    }));
+  /** turns→messages：按稳定 id 对齐旧行（截断/删除/并发不错位）；旧数据无 id 时退化为位次对齐 */
+  const turnsToMessages = (turns: RpTurn[], prev: RPMessage[]): RPMessage[] => {
+    const byId = new Map(prev.map((m) => [m.id, m]));
+    const legacyUsed = new Set<string>();
+    return turns.map((t, i) => {
+      let old = t.id ? byId.get(t.id) : undefined;
+      if (!old && !t.id) {
+        // 兼容无 id 旧轮（理论不该出现）：位次对齐且不复用
+        const cand = prev[i];
+        if (cand && !legacyUsed.has(cand.id)) {
+          old = cand;
+          legacyUsed.add(cand.id);
+        }
+      }
+      return {
+        id: t.id ?? old?.id ?? repos.uid(),
+        role: t.role,
+        name: t.name,
+        content: t.content,
+        createdAt: old?.createdAt ?? Date.now(),
+        // reasoning/notes：turn 上有用 turn 的；没有的沿用库里旧值（场记并行写入不被打字挤掉）
+        ...((t.reasoning ?? old?.reasoning) ? { reasoning: t.reasoning ?? old?.reasoning } : {}),
+        ...(t.notes?.length || old?.notes?.length ? { notes: t.notes?.length ? t.notes : old?.notes } : {}),
+      };
+    });
+  };
 
   const exportJsonl = (room: RPSession, charName: string) =>
     toStChatJsonl(
@@ -296,40 +338,69 @@ export function TheaterPage() {
     );
 
   const persist = useCallback(
-    async (turns: RpTurn[], summary: string) => {
+    async (turns: RpTurn[], summary: string, allowClear = false) => {
       if (!activeRoom) return;
-      const msgs = turnsToMessages(turns, activeRoom.messages);
-      const userFloors = msgs.filter((m) => m.role === "user").length;
-      const cadence = activeRoom.config?.ledgerCadence ?? 0;
-      const mark = activeRoom.config?.cadenceMark ?? 0;
-      const due = planLedgerCadence(userFloors - mark, cadence);
-      const saved = await saveRoom({
-        messages: msgs,
-        rollingSummary: summary || undefined,
-        ...(due ? { config: { ...activeRoom.config!, cadenceMark: userFloors } } : {}),
-      });
+      const id = activeRoom.id;
+      let due = false;
+      let guardHit = false;
+      // 链内事务读-改-写：调用序=落库序；cadence 判定基于库内最新行
+      const saved = await queueRoomWrite(id, () =>
+        repos.updateSession(id, (base) => {
+          const msgs = turnsToMessages(turns, base.messages);
+          // v3.1-⑥ 悬殊守卫：条数骤减且非折叠（摘要没变长）且非用户确认的清空 → 拒写消息。
+          // 专防旧快照（切页前的陈旧现场）晚到覆盖新历史。
+          const shrinking = base.messages.length - msgs.length;
+          const folding = summary.length > (base.rollingSummary?.length ?? 0) + 80;
+          if (!allowClear && shrinking > Math.max(2, Math.floor(base.messages.length * 0.5)) && !folding) {
+            guardHit = true;
+            return base; // 原样返回：只刷 updatedAt 都不必，整行不动
+          }
+          const userFloors = msgs.filter((m) => m.role === "user").length;
+          due = planLedgerCadence(userFloors - (base.config?.cadenceMark ?? 0), base.config?.ledgerCadence ?? 0);
+          return {
+            ...base,
+            messages: msgs,
+            rollingSummary: summary || undefined,
+            ...(due && base.config ? { config: { ...base.config, cadenceMark: userFloors } } : {}),
+          };
+        }),
+      );
+      if (guardHit) {
+        setNote("拦截了一次可疑的整屏覆盖（历史条数骤减且非折叠/非你确认的清空）——对话按库内最新保留。若这是你的本意，请逐条删除或用「重新开始」。");
+        return;
+      }
       // 本地写盘：全量快照覆盖（去抖在 writer 内部）
       if (saved) writerRef.current?.queue(roomFileName(saved.name ?? "", saved.id), exportJsonl(saved, assembly?.setup.charName ?? "角色"));
-      // 楼层定时 → 场记自动整理（P3；不打断聊天，活动流里见）
+      // 楼层定时 → 场记自动整理（跑在注册表里，切页不中断；活动流里见）
       if (due && saved && (saved.config?.agentEnabled ?? true)) void organize("auto");
+      if (saved) setRooms((prev) => roomSort(prev.map((r) => (r.id === saved.id ? saved : r))));
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [activeRoom, assembly, saveRoom],
+    [activeRoom, assembly, queueRoomWrite],
+  );
+
+  /** v3.1-⑥ 流式期自动保存：只落消息（含半句），不动 cadence/不触发场记；同样走链保序 */
+  const autosave = useCallback(
+    async (turns: RpTurn[], summary: string) => {
+      if (!activeRoom) return;
+      const id = activeRoom.id;
+      const saved = await queueRoomWrite(id, () =>
+        repos.updateSession(id, (base) => ({
+          ...base,
+          messages: turnsToMessages(turns, base.messages),
+          rollingSummary: summary || undefined,
+        })),
+      );
+      if (saved) setRooms((prev) => roomSort(prev.map((r) => (r.id === saved.id ? saved : r))));
+    },
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [activeRoom, queueRoomWrite],
   );
 
   // ------------------------------------------------------------
-  // 场记 agent（P3）：整理 = chatTools 多轮；端点不支持 tools → digest 降级
+  // 场记（v3.1-①）：整理跑在模块注册表里（flow/agentrun），切页/卸载都不中断；
+  // 每个工具调用即时落库，本页只是订阅视图。
   // ------------------------------------------------------------
-  const applyMarks = (marks: { id: string; st: "done" | "skipped" | "unmark" }[]) => {
-    if (!activeRoom || marks.length === 0) return;
-    const progress = { ...(activeRoom.progress ?? {}) };
-    for (const m of marks) {
-      if (m.st === "unmark") delete progress[m.id];
-      else progress[m.id] = m.st;
-    }
-    void saveRoom({ progress });
-  };
-
   const applyCanon = async (items: DigestLedgerItem[]) => {
     if (!activeRoom || items.length === 0) return;
     const now = Date.now();
@@ -348,90 +419,80 @@ export function TheaterPage() {
     setRoomCanon(await repos.listLedger(activeRoom.projectId, "confirmed", activeRoom.id));
   };
 
-  const organizeRef = useRef(false);
+  // ------------------------------------------------------------
+  // 场记（v3.1-①）：整理跑在模块注册表里，切页/卸载都不中断；本页只是订阅视图。
+  // io 全部现读现写（不捕获渲染态），每个工具调用即时落库。
+  // ------------------------------------------------------------
+  const activeRoomIdRef = useRef("");
+  useEffect(() => {
+    activeRoomIdRef.current = activeId;
+  }, [activeId]);
+  const sceneTitleRef = useRef("");
+  useEffect(() => {
+    sceneTitleRef.current = assembly?.sceneTitle ?? "";
+  }, [assembly]);
+
+  const organizeIO: OrganizeIO = useMemo(
+    () => ({
+      loadRoom: (roomId) => repos.getSession(roomId),
+      patchRoom: async (roomId, patch) => {
+        // 与聊天/自动保存同一条串行写链（调用序=落库序，不互相越序覆盖）
+        const saved = await queueRoomWrite(roomId, () => repos.updateSession(roomId, (cur) => ({ ...cur, ...patch })));
+        if (saved) setRooms((prev) => roomSort(prev.map((r) => (r.id === saved.id ? saved : r))));
+      },
+      addCanon: async (room, items) => {
+        await repos.addRoomCanon(
+          items.map((it) => ({
+            id: repos.uid(),
+            projectId: room.projectId,
+            roomId: room.id,
+            type: it.type,
+            content: it.content,
+            actors: it.actors,
+            status: "confirmed" as const,
+            createdAt: Date.now(),
+          })),
+        );
+      },
+      canonOf: (roomId) =>
+        repos.getSession(roomId).then((r) => (r ? repos.listLedger(r.projectId, "confirmed", roomId) : [])),
+      onCanonChanged: async (roomId) => {
+        if (activeRoomIdRef.current !== roomId) return;
+        const cur = await repos.getSession(roomId);
+        if (!cur || activeRoomIdRef.current !== roomId) return;
+        setRoomCanon(await repos.listLedger(cur.projectId, "confirmed", roomId));
+      },
+      onNote: async (rid, line) => {
+        // v3.1-⑦ 场记 tools 调用活动挂到最后一条 assistant 消息的 notes →
+        // 在回复的折叠思维链里呈现（跑完切回来也能看到本次整理做了什么）
+        if (activeRoomIdRef.current !== rid) return;
+        const saved = await queueRoomWrite(rid, () =>
+          repos.updateSession(rid, (cur) => {
+            const msgs = cur.messages.slice();
+            for (let i = msgs.length - 1; i >= 0; i--) {
+              if (msgs[i].role === "char") {
+                msgs[i] = { ...msgs[i], notes: [...(msgs[i].notes ?? []).slice(-30), line] };
+                break;
+              }
+            }
+            return { ...cur, messages: msgs };
+          }),
+        );
+        if (saved && activeRoomIdRef.current === rid) {
+          setRooms((prev) => roomSort(prev.map((r) => (r.id === rid ? saved : r))));
+        }
+      },
+    }),
+    [],
+  );
+
   const organize = useCallback(
-    async (mode: "manual" | "auto") => {
-      const room = activeRoom;
-      const asm = assembly;
-      if (!room || !asm) return;
-      if (organizeRef.current) return;
-      organizeRef.current = true;
-      setAgentBusy(true);
-      const stamp = (line: string) =>
-        setAgentSteps((prev) => [...prev.slice(-40), `[${new Date().toLocaleTimeString()}] ${line}`]);
-      try {
-        const turns = room.messages
-          .filter((m) => m.content.trim())
-          .slice(-24)
-          .map((m) => `${m.name}：${m.content.trim()}`)
-          .join("\n\n");
-        if (!turns.trim()) {
-          if (mode === "manual") stamp("没什么可整理的：对话还是空的。");
-          return;
-        }
-        const marks: { id: string; st: "done" | "skipped" | "unmark" }[] = [];
-        const added: DigestLedgerItem[] = [];
-        const ctx = {
-          snapshot: room.script ?? { sourceTitle: "", takenAt: 0, nodesUpdatedAt: 0, scenes: [] },
-          progress: room.progress ?? {},
-          canon: roomCanon,
-          onMarkBeat: (id: string, st: "done" | "skipped" | "unmark") => marks.push({ id, st }),
-          onAppendLedger: (it: DigestLedgerItem) => added.push(it),
-        };
-        const execute = (call: ToolCall) => runScriptTool(ctx, call.function.name, call.function.arguments).result;
-        stamp(mode === "auto" ? `楼层定时到点：场记开始整理（第 ${room.messages.filter((m) => m.role === "user").length} 楼）` : "场记开始整理…");
-        const res = await chatTools({
-          role: "analyzer",
-          tools: SCRIPT_TOOLS,
-          execute,
-          maxRounds: 4,
-          messages: [
-            { role: "system", content: SCRIPT_KIT_DIRECTIVE },
-            {
-              role: "system",
-              content: `【当前局面】${asm.sceneTitle}（剧本《${room.script?.sourceTitle || "沙盒"}》副本）。\n【房间正典】${roomCanon.length ? `${roomCanon.length} 条已确认事实` : "（空白正典：这是新房间）"}`,
-            },
-            { role: "user", content: `请整理下面这段 RP 对话（最近楼层）：核对已演到的节拍并标记，把新发生的事实写入正典。\n\n${turns}` },
-          ],
-          onStep: (s) => {
-            for (const c of s.calls) stamp(`${toolLabel(c.name, safeParse(c.arguments))} → ${c.result.split("\n")[0].slice(0, 60)}`);
-          },
-        });
-        if (res.stopped === "max_rounds") stamp("已达 4 轮上限，剩余下轮继续。");
-        if (res.text.trim()) stamp(`场记小结：${res.text.trim().slice(0, 160)}`);
-        applyMarks(marks);
-        await applyCanon(added);
-        if (added.length) stamp(`写入房间正典 ${added.length} 条（新房间从空白开始，不借作品台账）。`);
-        if (marks.length) stamp(`标记副本节拍 ${marks.length} 处（只动房间副本，主纲未受影响）。`);
-        setAgentDowngraded(false);
-      } catch (e) {
-        if (e instanceof ToolsUnsupportedError) {
-          // 降级：无工具的纯摘要整理，digest 直接进房间正典（用户决定②）
-          setAgentDowngraded(true);
-          try {
-            const turns = room.messages
-              .filter((m) => m.content.trim())
-              .slice(-24)
-              .map((m) => `${m.name}：${m.content.trim()}`)
-              .join("\n\n");
-            const obj = await chatJSON<unknown>(rollingDigestPrompt(room.rollingSummary ?? "", turns), { role: "analyzer" });
-            const d = sanitizeDigest(obj);
-            await applyCanon(d.ledger);
-            if (d.summary) await saveRoom({ rollingSummary: d.summary });
-            stamp(`端点不支持工具调用，已降级为纯摘要整理：正典 ${d.ledger.length} 条${d.summary ? "，滚动摘要已更新" : ""}。（节拍标记不可用）`);
-          } catch (e2) {
-            stamp(`降级整理也失败了：${errMsg(e2)}`);
-          }
-        } else {
-          stamp(`整理失败：${errMsg(e)}`);
-        }
-      } finally {
-        organizeRef.current = false;
-        setAgentBusy(false);
-      }
+    (mode: "manual" | "auto") => {
+      const roomId = activeRoomIdRef.current;
+      if (!roomId) return Promise.resolve();
+      return startOrganize({ roomId, io: organizeIO, sceneTitle: sceneTitleRef.current || "（未知场景）", mode });
     },
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    [activeRoom, assembly, roomCanon, saveRoom],
+    [organizeIO],
   );
   // ------------------------------------------------------------
   // 房间管理
@@ -456,7 +517,7 @@ export function TheaterPage() {
         projectId: pid,
         projectName: proj?.title ?? "",
         name: nf.name.trim() || `${proj?.title ?? "作品"} · 房间${rooms.filter((r) => r.projectId === pid).length + 1}`,
-        userName: loadAppConfig().userName || "读者",
+        userName: personaName(nf.personaId || personas.find((p) => p.isDefault)?.id || ""),
         pace: nf.pace,
         scopeMode: nf.sandbox ? "full" : nf.scopeMode,
         sandbox: nf.sandbox,
@@ -524,11 +585,14 @@ export function TheaterPage() {
     void saveRoom({ progress });
   };
 
-  const deleteCanonRow = async (rec: LedgerRecord) => {
-    if (!activeRoom) return;
-    await repos.deleteLedger(rec.id);
-    setRoomCanon((prev) => prev.filter((r) => r.id !== rec.id));
-  };
+  /** 台账面板改动后刷新注入用正典（房间+作品级） */
+  const refreshCanon = useCallback(async (roomId: string) => {
+    const cur = await repos.getSession(roomId);
+    if (!cur) return;
+    const [rc, pc] = await Promise.all([repos.listLedger(cur.projectId, "confirmed", roomId), repos.listLedger(cur.projectId, "confirmed", "*")]);
+    setRoomCanon(rc);
+    setProjectCanon(pc);
+  }, []);
 
   const setConfig = (patch: Partial<NonNullable<RPSession["config"]>>) => {
     if (!activeRoom?.config) return;
@@ -600,7 +664,7 @@ export function TheaterPage() {
           projectId: th.projectId,
           projectName: proj?.title ?? "",
           name: `${proj?.title ?? "作品"} · ${src ? "续写" : "全本"} ${new Date().toLocaleDateString()}`,
-          userName: src?.userName || "读者",
+          userName: personaName(personas.find((p) => p.isDefault)?.id ?? ""),
           pace: prefsRef.current.pace,
           scopeMode: "full",
           sandbox: scenes.length === 0,
@@ -854,19 +918,31 @@ export function TheaterPage() {
                     key={`${activeRoom.id}:${rpMountKey}`}
                     setup={runnerSetup}
                     charName={assembly.setup.charName}
-                    userName={activeRoom.userName}
+                    userName={persona?.name?.trim() || activeRoom.userName || "读者"}
                     sceneLabel={assembly.sceneTitle}
                     greeting={assembly.greeting}
                     initial={
                       activeRoom.messages.length
                         ? {
-                            turns: activeRoom.messages.map((m) => ({ role: m.role, name: m.name, content: m.content })),
+                            turns: activeRoom.messages.map((m) => ({
+                              id: m.id,
+                              role: m.role,
+                              name: m.name,
+                              content: m.content,
+                              ...(m.reasoning ? { reasoning: m.reasoning } : {}),
+                              ...(m.notes?.length ? { notes: m.notes } : {}),
+                            })),
                             summary: activeRoom.rollingSummary ?? "",
                           }
                         : null
                     }
                     initialBudget={{ budgetTokens: activeRoom.config?.budgetTokens ?? 8192, reserveTokens: activeRoom.config?.reserveTokens ?? 768 }}
                     onPersist={(turns, summary) => void persist(turns, summary)}
+                    onAutosave={(turns, summary) => void autosave(turns, summary)}
+                    onBudgetChange={(b, r) => void saveRoom({ config: { ...activeRoom.config!, budgetTokens: b, reserveTokens: r } }).then(() => {
+                      prefsRef.current = { ...prefsRef.current, budgetTokens: b, reserveTokens: r };
+                      savePrefs(prefsRef.current);
+                    })}
                     onDigest={(items) => void applyCanon(items)}
                     onBringBack={(turns) => void bringBackToRecap(turns)}
                   />
@@ -915,20 +991,12 @@ export function TheaterPage() {
                   </div>
                 </div>
 
-                <div className="panel" style={{ fontSize: 12, maxHeight: 220, overflowY: "auto" }}>
-                  <b>房间正典（{roomCanon.length} 条；只属于本房间）</b>
-                  {roomCanon.length === 0 && <div style={{ color: "var(--muted)", marginTop: 4 }}>空白。场记整理或折叠历史时，已演事实会写进这里——新房间不继承任何旧事实。</div>}
-                  {roomCanon
-                    .slice()
-                    .reverse()
-                    .map((r) => (
-                      <div key={r.id} style={{ display: "flex", gap: 6, marginTop: 4, alignItems: "baseline" }}>
-                        <span style={{ color: "var(--accent)" }}>[{TYPE_LABEL[r.type] ?? r.type}]</span>
-                        <span style={{ flex: 1 }}>{r.content}</span>
-                        <button style={{ fontSize: 10 }} onClick={() => void deleteCanonRow(r)}>删</button>
-                      </div>
-                    ))}
-                </div>
+                <RoomLedgerPanel
+                  projectId={activeRoom.projectId}
+                  roomId={activeRoom.id}
+                  snapshot={activeRoom.script ?? null}
+                  onChanged={() => void refreshCanon(activeRoom.id)}
+                />
 
                 <div className="panel" style={{ fontSize: 12 }}>
                   <b>纠偏（author's note，下一句生效）</b>
@@ -955,10 +1023,3 @@ export function TheaterPage() {
   );
 }
 
-function safeParse(s: string): Record<string, unknown> {
-  try {
-    return JSON.parse(s) as Record<string, unknown>;
-  } catch {
-    return {};
-  }
-}

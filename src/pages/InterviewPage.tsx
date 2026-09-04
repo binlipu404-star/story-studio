@@ -12,9 +12,11 @@ import { bibleProgress, firstFocus, mergeBibleUpdates } from "../flow/interview.
 import { interviewSystemPrompt, type InterviewTurn } from "../ai/prompts";
 import { chat } from "../ai/client";
 import { extractJson } from "../ai/json";
+import { loadProgress, saveProgress } from "../flow/progress";
 
 const MSG_LIMIT = 100; // 聊天记录 localStorage 上限
 const REV_LIMIT = 20; // revisions 裁剪上限
+const DRAFT_TEXT_MAX = 4000; // 进度记忆单段草稿上限（超大文本不入 localStorage）
 
 // ---------- 页面本地类型 ----------
 
@@ -184,6 +186,40 @@ export function InterviewPage({ projectId }: { projectId: string }) {
       /* 忽略 quota 异常 */
     }
   }, [storageKey, messages]);
+
+  // ---- v3.1-② 进度记忆：未提交草稿（访谈输入框 + 行内字段编辑）数据就绪后恢复一次 ----
+  // 就绪信号 = 已载入的 project 正是当前 projectId（切项目时旧 project 不满足，天然防串项目）。
+  const dataReady = project !== null && project.id === projectId;
+  const draftRestoredFor = useRef<string | null>(null);
+  useEffect(() => {
+    if (!dataReady || draftRestoredFor.current === projectId) return;
+    draftRestoredFor.current = projectId;
+    const saved = loadProgress<{ inputDraft?: string; drafts?: Record<string, string> }>(
+      "interview",
+      projectId,
+    );
+    if (!saved) return;
+    if (typeof saved.inputDraft === "string" && saved.inputDraft) {
+      setInput(saved.inputDraft.slice(0, DRAFT_TEXT_MAX));
+    }
+    // 行内草稿逐个校验字段仍存在（防已删字段），空串不入
+    const fieldKeys = new Set((project.bible.fields ?? []).map((f) => f.key));
+    const drafts: Record<string, string> = {};
+    if (saved.drafts && typeof saved.drafts === "object") {
+      for (const [k, v] of Object.entries(saved.drafts)) {
+        if (typeof v === "string" && v && fieldKeys.has(k)) drafts[k] = v.slice(0, DRAFT_TEXT_MAX);
+      }
+    }
+    if (Object.keys(drafts).length > 0) setDrafts(drafts);
+  }, [dataReady, projectId, project]);
+  useEffect(() => {
+    if (!dataReady || draftRestoredFor.current !== projectId) return;
+    const slim: Record<string, string> = {};
+    for (const [k, v] of Object.entries(drafts)) {
+      if (v && v.trim()) slim[k] = v.slice(0, DRAFT_TEXT_MAX);
+    }
+    saveProgress("interview", projectId, { inputDraft: input.slice(0, DRAFT_TEXT_MAX), drafts: slim });
+  }, [dataReady, projectId, input, drafts]);
 
   // 卸载：清 toast 定时器 + 中止在途流
   useEffect(

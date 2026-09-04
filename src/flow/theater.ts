@@ -20,7 +20,7 @@ import type {
 import type { RpSetup } from "./rp.js";
 import { buildTrialPack, synthesizeNarratorCard } from "./trialpack.js";
 import { ledgerSnapshot } from "./snapshot.js";
-import { scriptBlock, snapshotDebt, snapshotDebtText, storyAdvance, type StoryAdvance } from "./script.js";
+import { progressMemoText, scriptBlock, snapshotDebt, snapshotDebtText, storyAdvance, type StoryAdvance } from "./script.js";
 import { personaPromptBlock } from "../ai/prompts.js";
 import { exportCardV2 } from "../st/card.js";
 
@@ -111,7 +111,8 @@ export function assembleRoom(input: RoomAssemblyInput): RoomAssembly {
       .filter(Boolean)
       .join("\n") || undefined;
   const loreSettings = project?.lorebook ?? { scanDepth: 2, tokenBudget: 2048, recursiveScanning: true };
-  const uname = room.userName;
+  // v3.1-⑤ 用户名取决于画像：有画像用画像名，无画像回落房间存量名（旧房兼容）
+  const uname = persona?.name?.trim() || room.userName || "读者";
   const personaBlock = persona ? personaPromptBlock(persona) : undefined;
 
   const lead: Character | null = cfg && cfg.charId ? characters.find((c) => c.id === cfg.charId) ?? null : null;
@@ -160,7 +161,9 @@ export function assembleRoom(input: RoomAssemblyInput): RoomAssembly {
     worldview,
   });
 
-  const scriptText = scriptBlock(snap, progress, advance, 1, 2);
+  // 剧本块 + 进展备忘行（场记每楼标进度后，此处每轮自动反映最新进度）
+  const memo = progressMemoText(advance);
+  const scriptText = [scriptBlock(snap, progress, advance, 1, 2), memo].filter(Boolean).join("\n");
 
   let setup: RpSetup;
   if (lead) {

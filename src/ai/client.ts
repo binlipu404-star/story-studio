@@ -17,6 +17,8 @@ export interface ChatOptions {
   signal?: AbortSignal;
   /** 正文增量回调（reasoning_content 不从这里走） */
   onDelta?: (delta: string) => void;
+  /** 思维链增量回调（推理模型 provider 返回 reasoning_content 时逐段回调） */
+  onReasoning?: (delta: string) => void;
 }
 
 export interface ChatResult {
@@ -106,6 +108,7 @@ export async function chat(
         delta.reasoning_content
       ) {
         reasoning = (reasoning ?? "") + delta.reasoning_content;
+        opts.onReasoning?.(delta.reasoning_content);
       }
     } catch {
       /* 非 JSON 的心跳/残帧，忽略 */
@@ -187,6 +190,8 @@ export async function chatJSON<T = unknown>(
 export interface ChatToolsStep {
   round: number;
   assistantText: string;
+  reasoning?: string; // 推理模型该轮的思维链（provider 支持时）
+  truncated?: boolean; // 该轮被 max_tokens 腰斩（finish_reason=length）
   calls: { name: string; arguments: string; result: string }[];
 }
 
@@ -202,14 +207,20 @@ export class ToolsUnsupportedError extends Error {}
 interface ApiResponseMessage {
   role?: string;
   content?: string | null;
+  reasoning_content?: string | null; // 推理模型思维链（非流式形态）
   tool_calls?: { id?: string; type?: string; function?: { name?: string; arguments?: string } }[];
+}
+
+interface ApiTurnResult {
+  message: ApiResponseMessage;
+  finishReason?: string; // length = 被 max_tokens 腰斩（截断告警用）
 }
 
 async function postChatOnce(
   body: Record<string, unknown>,
   role: ChatRole,
   signal?: AbortSignal,
-): Promise<ApiResponseMessage> {
+): Promise<ApiTurnResult> {
   const ep = loadAppConfig()[role];
   if (!ep.baseURL) throw new Error("未配置 baseURL，请先到设置页填写");
   if (!ep.model) throw new Error("未配置模型名（model），请先到设置页填写");
@@ -232,8 +243,10 @@ async function postChatOnce(
     }
     throw new Error(`AI 请求失败 ${res.status}: ${detail.slice(0, 300)}`);
   }
-  const data = (await res.json()) as { choices?: { message?: ApiResponseMessage }[] };
-  return data.choices?.[0]?.message ?? {};
+  const data = (await res.json()) as {
+    choices?: { message?: ApiResponseMessage; finish_reason?: string }[];
+  };
+  return { message: data.choices?.[0]?.message ?? {}, finishReason: data.choices?.[0]?.finish_reason };
 }
 
 /**
@@ -254,18 +267,23 @@ export async function chatTools(opts: {
 }): Promise<ChatToolsResult> {
   const ep = loadAppConfig()[opts.role ?? "analyzer"];
   const maxRounds = Math.max(1, Math.min(opts.maxRounds ?? 4, 10));
+  // 截断防护：场记轮要装下「思维链+工具调用 JSON」，绝不能盲从端点全局 maxTokens
+  // （analyzer 常配 1024 之类小预算，推理模型光思维链就吃光 → tool_calls 被腰斩，
+  //  表现为"场记异常截断"）。显式给足，除非调用方另有指定。
+  const maxTokens = opts.maxTokens ?? Math.max(ep.maxTokens ?? 0, 2048);
   const msgs: AgentMessage[] = [...opts.messages];
   const steps: ChatToolsStep[] = [];
   let lastText = "";
 
   for (let round = 1; round <= maxRounds; round++) {
     let msg: ApiResponseMessage;
+    let finishReason: string | undefined;
     try {
-      msg = await postChatOnce(
+      const out = await postChatOnce(
         {
           messages: msgs,
           temperature: opts.temperature ?? ep.temperature ?? 0.4,
-          ...(opts.maxTokens ?? ep.maxTokens ? { max_tokens: opts.maxTokens ?? ep.maxTokens } : {}),
+          ...(maxTokens ? { max_tokens: maxTokens } : {}),
           tools: opts.tools,
           tool_choice: "auto",
           stream: false,
@@ -273,6 +291,8 @@ export async function chatTools(opts: {
         opts.role ?? "analyzer",
         opts.signal,
       );
+      msg = out.message;
+      finishReason = out.finishReason;
     } catch (e) {
       const m = errMsg(e);
       if (steps.length === 0 && /\b(400|404|422)\b/.test(m)) {
@@ -292,11 +312,20 @@ export async function chatTools(opts: {
     if (text) lastText = text;
 
     if (calls.length === 0) {
-      return { text: text || lastText, steps, stopped: "final" };
+      if (finishReason === "length" && text.trim()) {
+        lastText = `${text}\n\n（提醒：本轮输出被 max_tokens 截断，结论可能不完整——可在设置里调大分析端点的 max_tokens）`;
+      }
+      return { text: lastText, steps, stopped: "final" };
     }
 
     // 执行并回灌
-    const step: ChatToolsStep = { round, assistantText: text, calls: [] };
+    const step: ChatToolsStep = {
+      round,
+      assistantText: text,
+      ...(typeof msg.reasoning_content === "string" && msg.reasoning_content ? { reasoning: msg.reasoning_content } : {}),
+      ...(finishReason === "length" ? { truncated: true } : {}),
+      calls: [],
+    };
     msgs.push({ role: "assistant", content: text || null, tool_calls: calls });
     for (const call of calls) {
       let result: string;

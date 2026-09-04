@@ -2,6 +2,8 @@ import { useState } from "react";
 import type { AppConfig, ModelEndpoint } from "../core/types";
 import { loadAppConfig, saveAppConfig } from "../ai/config";
 import { chat, type ChatRole } from "../ai/client";
+import { clearAllProgress } from "../flow/progress";
+import { clearPrefs } from "../flow/prefs";
 
 interface TestState {
   running: boolean;
@@ -31,6 +33,7 @@ function parseNum(raw: string): number | undefined {
 export function SettingsPanel() {
   const [cfg, setCfg] = useState<AppConfig>(() => loadAppConfig());
   const [msg, setMsg] = useState("");
+  const [progressMsg, setProgressMsg] = useState("");
   const [tests, setTests] = useState<Record<ChatRole, TestState>>({
     writer: IDLE_TEST,
     analyzer: IDLE_TEST,
@@ -187,16 +190,24 @@ export function SettingsPanel() {
 
       <div className="panel">
         <h3 style={{ marginTop: 0 }}>全局</h3>
-        <div className="grid2" style={{ maxWidth: 420 }}>
-          <label className="field">
-            用户名（{"{{user}}"}）
-            <input
-              value={cfg.userName}
-              placeholder="旅行者"
-              onChange={(e) => setCfg((c) => ({ ...c, userName: e.target.value }))}
-            />
-          </label>
+        <p className="muted" style={{ fontSize: 13 }}>
+          用户名（{"{{user}}"}）不再全局设置：<b>用哪张画像（人设），用户名就是谁</b>；未选画像时回落「读者」。
+        </p>
+        <div className="row" style={{ marginTop: 8, alignItems: "center" }}>
+          <button
+            onClick={() => {
+              const n = clearAllProgress();
+              clearPrefs();
+              setProgressMsg(`已清除 ${n} 条进度记忆（各页选中/草稿/楼层现场）与剧场偏好；下次进入各页从头开始。`);
+            }}
+          >
+            清除进度记忆
+          </button>
+          {progressMsg && <span className="muted">{progressMsg}</span>}
         </div>
+        <p className="muted" style={{ marginTop: 6, fontSize: 12 }}>
+          进度记忆＝各页面自动记的现场（选中项、草稿、最后打开的房间等）。平时自动记，这里一键清除。
+        </p>
         <div className="row" style={{ marginTop: 12 }}>
           <button className="primary" onClick={save}>
             保存

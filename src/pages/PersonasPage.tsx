@@ -23,6 +23,7 @@ import type { Persona } from "../core/types";
 import { personaPromptBlock } from "../ai/prompts";
 import { importPersonaBytes } from "../st/persona";
 import * as repos from "../store/repos";
+import { loadProgress, saveProgress } from "../flow/progress";
 
 // ---------- 小工具 ----------
 
@@ -133,6 +134,24 @@ export function PersonasPage() {
   useEffect(() => {
     void refresh();
   }, [refresh]);
+
+  // v3.1-② 进度记忆：展开编辑中的画像，数据就绪（loaded）后恢复一次。
+  // 校验保存的 id 仍在现有列表里（防已删画像）；draft 由库内现值重建，不存草稿大对象。
+  const selRestored = useRef(false);
+  useEffect(() => {
+    if (!loaded || selRestored.current) return;
+    selRestored.current = true;
+    const saved = loadProgress<{ editingId?: string }>("personas");
+    if (!saved?.editingId) return;
+    const p = personas.find((x) => x.id === saved.editingId);
+    if (!p) return;
+    setEditingId(p.id);
+    setDraft(draftFromPersona(p));
+  }, [loaded, personas]);
+  useEffect(() => {
+    if (!loaded || !selRestored.current) return;
+    saveProgress("personas", undefined, { editingId });
+  }, [loaded, editingId]);
 
   // 新建画像后：等编辑器挂载、nameInputRef 就绪，聚焦名称输入框一次。
   useEffect(() => {

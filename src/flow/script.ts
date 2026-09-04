@@ -149,6 +149,21 @@ export function scriptBlock(
 // ---------- 台账楼层定时 ----------
 
 /**
+ * 进展备忘行（v3.1-⑦ 配套）：一行紧凑文本写明「演到哪、下一拍是什么」，
+ * 追加在剧本块尾部——场记每楼自动标进度后，这行随每轮装配刷新，
+ * AI 和用户（副本清单/进展头）看到的始终是最新进度。纯函数可测。
+ */
+export function progressMemoText(adv: StoryAdvance): string {
+  if (adv.finished) return "【进展备忘】副本节拍已全部演完（正典以房间台账为准）。";
+  if (adv.currentSceneIndex === null) return "";
+  const donePart = adv.beatsTotal > 0 ? `拍 ${adv.beatsDone}/${adv.beatsTotal}` : "无拍";
+  return (
+    `【进展备忘】第 ${adv.currentSceneIndex + 1}/${adv.scenesTotal} 幕 · ${donePart}` +
+    (adv.currentBeatText ? `；下一拍：${adv.currentBeatText}` : "")
+  );
+}
+
+/**
  * 定时整理触发判定：自上次触发以来新增 user 楼层 ≥ cadence 则触发一次。
  * cadence<=0 = 关闭。纯函数：楼层数按 user 消息计（"楼"=用户说一句）。
  */

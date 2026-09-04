@@ -30,13 +30,13 @@ import {
 } from "../flow/outline";
 import { buildTrialPack, type TrialPack } from "../flow/trialpack";
 import { putHandoff, takeHandoff, type RecapHandoff } from "../flow/handoff";
+import { loadProgress, saveProgress } from "../flow/progress";
 import { goTab } from "../flow/nav";
 import { exportCardV2 } from "../st/card";
 import { exportLorebookGlobal } from "../st/lorebook";
 import { parseStChat, toStChatJsonl, toTranscript, type ParsedChatMessage } from "../st/chatlog";
 import { personaPromptBlock, sessionRecapPrompt } from "../ai/prompts";
 import { chatJSON } from "../ai/client";
-import { loadAppConfig } from "../ai/config";
 
 // ---------- 常量与展示辅助 ----------
 
@@ -184,6 +184,22 @@ export function TrialPage({ projectId }: { projectId: string }) {
     void refresh();
   }, [refresh]);
 
+  // v3.1-② 选择记忆：幕/主演/画像 切页回来还在原现场（数据就绪后恢复一次）
+  const selRestored = useRef(false);
+  useEffect(() => {
+    if (!loaded || selRestored.current) return;
+    selRestored.current = true;
+    const saved = loadProgress<{ sceneId?: string; leadCharId?: string; personaId?: string }>("trial", projectId);
+    if (!saved) return;
+    if (saved.sceneId && nodes.some((n) => n.id === saved.sceneId)) setSceneId(saved.sceneId);
+    if (saved.leadCharId && (saved.leadCharId === NONE_CARD_ID || characters.some((c) => c.id === saved.leadCharId))) setLeadCharId(saved.leadCharId);
+    if (saved.personaId && personas.some((p) => p.id === saved.personaId)) setPersonaId(saved.personaId);
+  }, [loaded, nodes, characters, personas, projectId]);
+  useEffect(() => {
+    if (!loaded) return;
+    saveProgress("trial", projectId, { sceneId, leadCharId, personaId });
+  }, [loaded, projectId, sceneId, leadCharId, personaId]);
+
   const scenes = useMemo(() => sceneSequence(nodes), [nodes]);
   const scene = scenes.find((s) => s.id === sceneId) ?? scenes[0] ?? null;
   /** 无卡模式：不导出主演，交给 buildTrialPack 合成旁白卡（原创/自由试跑） */
@@ -265,7 +281,7 @@ export function TrialPage({ projectId }: { projectId: string }) {
           .map((f) => f.value.trim())
           .filter(Boolean)
           .join("\n") || undefined;
-      const uname = persona?.name?.trim() || loadAppConfig().userName;
+      const uname = persona?.name?.trim() || "读者"; // v3.1-⑤ 用户名取决于画像，无画像落「读者」
       const built = buildTrialPack({
         packName: scene.title,
         scene,
@@ -383,7 +399,7 @@ export function TrialPage({ projectId }: { projectId: string }) {
         projectId,
         nodeId: scene.id,
         cast,
-        userName: persona?.name?.trim() || loadAppConfig().userName, // 与 greeting 注入 {{user}} 的名字保持一致
+        userName: persona?.name?.trim() || "读者", // 与 greeting 注入 {{user}} 的名字保持一致（v3.1-⑤ 画像即用户名）
         messages,
         rollingSummary: recap?.summary,
         status: "testing",
@@ -538,7 +554,7 @@ export function TrialPage({ projectId }: { projectId: string }) {
     }
     try {
       await repos.addProposals(rows);
-      setProposalMsg(`已采纳 ${rows.length} 条 → 台账提案区（status=proposed，待台账页裁决）。`);
+      setProposalMsg(`已采纳 ${rows.length} 条 → 作品级提案区（status=proposed，去 🎭 RP 剧场右栏「台账」裁决）。`);
     } catch (e) {
       setImportError(`采纳提案失败：${errMsg(e)}`);
     }

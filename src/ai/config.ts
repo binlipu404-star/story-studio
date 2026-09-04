@@ -4,14 +4,12 @@ import type { AppConfig, ModelEndpoint } from "../core/types";
 const STORAGE_KEY = "story-studio.config";
 
 const DEFAULT_BASE_URL = "https://api.deepseek.com";
-const DEFAULT_USER_NAME = "旅行者";
 
 /** 每次调用返回全新的默认配置对象，避免调用方改坏共享引用 */
 function freshDefaults(): AppConfig {
   return {
     writer: { baseURL: DEFAULT_BASE_URL, model: "", apiKey: "" },
     analyzer: { baseURL: DEFAULT_BASE_URL, model: "", apiKey: "" },
-    userName: DEFAULT_USER_NAME,
   };
 }
 
@@ -64,7 +62,6 @@ export function loadAppConfig(): AppConfig {
   const cfg: AppConfig = {
     writer: toEndpoint(src.writer),
     analyzer: toEndpoint(src.analyzer),
-    userName: str(src.userName, DEFAULT_USER_NAME) || DEFAULT_USER_NAME,
   };
   return cfg;
 }

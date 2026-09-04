@@ -5,6 +5,7 @@ import {
   mergeProgressOnSync,
   storyAdvance,
   scriptBlock,
+  progressMemoText,
   planLedgerCadence,
   scenesOfChapters,
   roomScope,
@@ -74,6 +75,10 @@ export default async function (t) {
     t.eq(a2.beatsDone, 2, "4. 两拍完");
     const empty = buildScriptSnapshot("T", [], [], 100);
     t.ok(storyAdvance(empty, {}).nextHint.includes("沙盒"), "4. 沙盒提示");
+    // 4b. 进展备忘行（v3.1-⑦ 注入台面的当前进度一行）
+    t.eq(progressMemoText(a0), "【进展备忘】第 1/1 幕 · 拍 0/2；下一拍：匕首失踪", "4b. 备忘行含幕/拍/下一拍");
+    t.ok(progressMemoText(a1).includes("全部演完"), "4b. 演尽提示");
+    t.eq(progressMemoText(storyAdvance(empty, {})), "", "4b. 沙盒无幕 → 空串");
   }
 
   // 5. 副本块注入文本：窗口裁剪 + 完成/跳过/当前 标号

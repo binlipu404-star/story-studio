@@ -9,19 +9,19 @@ import * as repos from "../store/repos";
 import { bundleZipBytes } from "../flow/bundle";
 import { goTab } from "../flow/nav";
 import { peekHandoff, putHandoff } from "../flow/handoff";
+import { loadProgress, saveProgress } from "../flow/progress";
 import { InterviewPage } from "./InterviewPage";
 import { OutlinePage } from "./OutlinePage";
 import { TrialPage } from "./TrialPage";
-import { LedgerPage } from "./LedgerPage";
 import { CastPage } from "./CastPage";
 import { LorePage } from "./LorePage";
 
-type WsTab = "interview" | "outline" | "trial" | "ledger" | "cast" | "lore";
+// v3.1-④：作品工作区不再有「台账」页签——台账整体迁入 🎭 RP 剧场（每房间独立）
+type WsTab = "interview" | "outline" | "trial" | "cast" | "lore";
 const WS_TABS: { id: WsTab; label: string }[] = [
   { id: "interview", label: "构思访谈" },
   { id: "outline", label: "大纲工作台" },
   { id: "trial", label: "ST 试跑" },
-  { id: "ledger", label: "台账" },
   { id: "cast", label: "人物卡" },
   { id: "lore", label: "世界书" },
 ];
@@ -66,6 +66,23 @@ export function ProjectsPage() {
     void refresh();
   }, [refresh]);
 
+  // 进入某作品即记住（v3.1-②）
+  useEffect(() => {
+    if (open) saveProgress("projects", undefined, { projectId: open.id });
+  }, [open]);
+
+  // v3.1-② 进度记忆：上次打开的作品自动回到工作台（页签由 ProjectWorkspace 自恢复；有复盘投递时让位）
+  const restoredRef = useRef(false);
+  useEffect(() => {
+    if (!loaded || restoredRef.current || open) return;
+    restoredRef.current = true;
+    if (peekHandoff("recap", "*")) return; // 复盘投递优先决定开哪个作品
+    const last = loadProgress<{ projectId?: string }>("projects");
+    if (!last?.projectId) return;
+    const proj = projects.find((p) => p.id === last.projectId);
+    if (proj) setOpen(proj);
+  }, [loaded, projects, open]);
+
   // 「带对话去复盘」落在别的页签时：自动打开对应作品工作台（TrialPage 挂载后自消费投递）
   const recapPeekDone = useRef(false);
   useEffect(() => {
@@ -101,7 +118,9 @@ export function ProjectsPage() {
 
   const removeProject = async (p: Project) => {
     if (
-      !window.confirm(`删除作品《${p.title}》及其全部数据（大纲/人物/世界书/会话/台账）？此操作不可恢复。`)
+      !window.confirm(
+        `删除作品《${p.title}》及其全部数据（大纲/人物/世界书/会话/台账/RP 剧场中挂在本作品下的全部房间与房间正典）？此操作不可恢复。`,
+      )
     ) {
       return;
     }
@@ -163,10 +182,15 @@ interface Stats {
 function ProjectWorkspace({ project, onBack }: { project: Project; onBack: () => void }) {
   const [stats, setStats] = useState<Stats | null>(null);
   const [error, setError] = useState<string | null>(null);
-  // 剧场「带对话去复盘」进来：直接落在 ST 试跑页签（TrialPage 挂载才消费投递）
-  const [wsTab, setWsTab] = useState<WsTab>(() =>
-    (peekHandoff("recap", project.id) as { sessionId?: string } | null)?.sessionId ? "trial" : "interview",
-  );
+  // v3.1-②：工作现场记忆（上次页签）；复盘投递优先落 ST 试跑
+  const [wsTab, setWsTab] = useState<WsTab>(() => {
+    if ((peekHandoff("recap", project.id) as { sessionId?: string } | null)?.sessionId) return "trial";
+    const saved = loadProgress<{ wsTab?: WsTab }>("ws", project.id);
+    return saved?.wsTab && WS_TABS.some((t) => t.id === saved.wsTab) ? saved.wsTab : "interview";
+  });
+  useEffect(() => {
+    saveProgress("ws", project.id, { wsTab });
+  }, [project.id, wsTab]);
   const [exporting, setExporting] = useState(false);
   const [exportMsg, setExportMsg] = useState<string | null>(null);
 
@@ -237,7 +261,7 @@ function ProjectWorkspace({ project, onBack }: { project: Project; onBack: () =>
   }, [refreshStats]);
 
   const removeProject = async () => {
-    if (!window.confirm(`删除作品《${project.title}》及其全部数据？此操作不可恢复。`)) return;
+    if (!window.confirm(`删除作品《${project.title}》及其全部数据（大纲/人物/世界书/会话/台账/RP 剧场中挂在本作品下的全部房间与房间正典）？此操作不可恢复。`)) return;
     await repos.deleteProjectCascade(project.id);
     onBack();
   };
@@ -297,7 +321,6 @@ function ProjectWorkspace({ project, onBack }: { project: Project; onBack: () =>
       {wsTab === "interview" && <InterviewPage projectId={project.id} />}
       {wsTab === "outline" && <OutlinePage projectId={project.id} />}
       {wsTab === "trial" && <TrialPage projectId={project.id} />}
-      {wsTab === "ledger" && <LedgerPage projectId={project.id} />}
       {wsTab === "cast" && <CastPage projectId={project.id} />}
       {wsTab === "lore" && <LorePage projectId={project.id} />}
     </div>
