@@ -8,15 +8,12 @@
 //   3. 伏笔欠账——用房间剧本副本视角算（snapshotDebt），主纲改了也看不到。
 // 原作品页的「台账」页签由此取代删除。
 // ============================================================
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { LedgerRecord, LedgerType, ScriptSnapshot } from "../core/types";
 import * as repos from "../store/repos";
 import { LEDGER_TYPE_NAMES, LEDGER_TYPES } from "../flow/snapshot";
 import { snapshotDebt } from "../flow/script";
-
-function errMsg(e: unknown): string {
-  return e instanceof Error ? e.message : String(e);
-}
+import { errMsg } from "../core/uiUtils";
 
 const TYPE_ICONS: Record<LedgerType, string> = {
   event: "📌",
@@ -50,15 +47,23 @@ export function RoomLedgerPanel({
   const [info, setInfo] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
+  // 始终指向当前房间的 roomId（refresh 闭包外置的竞态判据）
+  const liveRoomId = useRef(roomId);
+  useEffect(() => {
+    liveRoomId.current = roomId;
+  }, [roomId]);
+
   const refresh = useCallback(async () => {
     try {
       const rr = roomId ? await repos.listLedger(projectId, undefined, roomId) : [];
       const pr = await repos.listLedger(projectId);
+      // 房间切换竞态守卫：两次 await 期间切了房间，旧房间的迟到响应不得覆盖新房间的行
+      if (liveRoomId.current !== roomId) return;
       setRoomRows(rr);
       setProjRows(pr.filter((r) => !r.roomId));
       setError(null);
     } catch (e) {
-      setError(errMsg(e));
+      if (liveRoomId.current === roomId) setError(errMsg(e));
     }
   }, [projectId, roomId]);
 
@@ -74,11 +79,11 @@ export function RoomLedgerPanel({
   const projProposed = pick(projRows.filter((r) => r.status === "proposed"));
   const projConfirmed = pick(projRows.filter((r) => r.status === "confirmed"));
 
-  const debts = useMemo(() => {
-    if (!snapshot || snapshot.scenes.length === 0) return { open: [] as { sceneTitle: string; setup: string }[], paid: [] as { sceneTitle: string; setup: string }[] };
+  // snapshotDebt 只返回未回收项，「已回收」在这里无从算起也无人展示——只留 open
+  const openDebts = useMemo(() => {
+    if (!snapshot || snapshot.scenes.length === 0) return [] as { sceneTitle: string; setup: string }[];
     const paidSetups = roomRows.filter((r) => r.type === "foreshadow" && r.status === "confirmed").map((r) => r.content);
-    const all = snapshotDebt(snapshot, paidSetups);
-    return { open: all.slice(0, 20), paid: [] as { sceneTitle: string; setup: string }[] };
+    return snapshotDebt(snapshot, paidSetups).slice(0, 20);
   }, [snapshot, roomRows]);
 
   const mutate = async (fn: () => Promise<unknown>, msg: string) => {
@@ -239,9 +244,9 @@ export function RoomLedgerPanel({
       {/* 3. 伏笔欠账（房间副本视角） */}
       {!snapshot || snapshot.scenes.length === 0 ? null : (
         <section className="panel">
-          <h3 style={{ margin: 0 }}>伏笔欠账（副本视角 · {debts.open.length}）</h3>
-          {debts.open.length === 0 && <p className="muted" style={{ fontSize: 12 }}>副本里的伏笔在房间正典中都找到了回收记录。</p>}
-          {debts.open.map((d, i) => (
+          <h3 style={{ margin: 0 }}>伏笔欠账（副本视角 · {openDebts.length}）</h3>
+          {openDebts.length === 0 && <p className="muted" style={{ fontSize: 12 }}>副本里的伏笔在房间正典中都找到了回收记录。</p>}
+          {openDebts.map((d, i) => (
             <div key={`${d.sceneTitle}:${i}`} className="row" style={{ gap: 6, padding: "2px 0", fontSize: 12 }}>
               <span style={{ color: "#b3261e" }}>欠</span>
               <span style={{ flex: 1 }}>{d.setup}</span>

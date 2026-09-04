@@ -11,13 +11,10 @@ import { chat, chatJSON } from "../ai/client";
 import { rollingDigestPrompt, rollingSummaryPrompt } from "../ai/prompts";
 import { sanitizeDigest, type DigestLedgerItem } from "../flow/snapshot";
 import { planRollingSummary, rpAssemble, turnsTranscript, type RpTurn, type RpSetup } from "../flow/rp";
-
-function errMsg(e: unknown): string {
-  return e instanceof Error ? e.message : String(e);
-}
+import { errMsg, isAbort } from "../core/uiUtils";
 
 /** 稳定轮次 id（v3.1-⑥）：消息映射按 id 对齐，删除/截断/并发写不错位 */
-export function newTurnId(): string {
+function newTurnId(): string {
   return typeof crypto !== "undefined" && "randomUUID" in crypto
     ? crypto.randomUUID()
     : `t${Date.now().toString(36)}${Math.random().toString(36).slice(2, 10)}`;
@@ -34,9 +31,12 @@ const SEC_COLORS: Record<string, string> = {
   authorNote: "#6a1b9a",
   summary: "#00838f",
   ledger: "#8d6e63",
+  script: "#37474f",
   loreBefore: "#ef6c00",
   loreAfter: "#aeea00",
   persona: "#78909c",
+  pace: "#9ccc65",
+  userNameHint: "#bcaaa4",
   examples: "#b0bec5",
   history: "#546e7a",
 };
@@ -61,15 +61,13 @@ export interface RpRunnerProps {
   onAutosave?: (turns: RpTurn[], summary: string) => void;
   /** v3.1-③ 预算编辑即时回调（父层写房间 config + prefs；组件本身不再只存本地 state） */
   onBudgetChange?: (budget: number, reserve: number) => void;
-  /** 每条 assistant 回复定稿后回调（父层据此触发楼层场记等） */
-  onAssistantSettled?: (content: string, floorCount: number) => void;
   /** 提供则滚动摘要升级为 digest：折叠点同时抽取台账事实并回调（RP 剧场自动台账） */
   onDigest?: (items: DigestLedgerItem[]) => void;
   /** 带这些对话去复盘 */
   onBringBack: (turns: RpTurn[]) => void;
 }
 
-export function RpRunner({ setup, charName, userName, sceneLabel, greeting, disabled, initial, initialBudget, onPersist, onAutosave, onBudgetChange, onAssistantSettled, onDigest, onBringBack }: RpRunnerProps) {
+export function RpRunner({ setup, charName, userName, sceneLabel, greeting, disabled, initial, initialBudget, onPersist, onAutosave, onBudgetChange, onDigest, onBringBack }: RpRunnerProps) {
   const [turns, setTurns] = useState<RpTurn[]>([{ id: newTurnId(), role: "char", name: charName, content: greeting }]);
   const [summary, setSummary] = useState("");
   const [input, setInput] = useState("");
@@ -162,10 +160,6 @@ export function RpRunner({ setup, charName, userName, sceneLabel, greeting, disa
     settledRef.current = { turns: next, summary: sum, allowClear, allowFold };
     onPersistRef.current?.(next, sum, allowClear, allowFold);
   }, []);
-  const assistantSettledRef = useRef(onAssistantSettled);
-  useEffect(() => {
-    assistantSettledRef.current = onAssistantSettled;
-  }, [onAssistantSettled]);
   const budgetChangeRef = useRef(onBudgetChange);
   useEffect(() => {
     budgetChangeRef.current = onBudgetChange;
@@ -173,6 +167,8 @@ export function RpRunner({ setup, charName, userName, sceneLabel, greeting, disa
 
   // ---- v3.1-③ 预算编辑自动记忆（500ms 去抖：连打数字只记最后一次）----
   const budgetTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // 卸载时清掉未到点的预算记忆（否则组件没了还会回调一次父层写库）
+  useEffect(() => () => { if (budgetTimer.current) clearTimeout(budgetTimer.current); }, []);
   const scheduleBudgetSave = useCallback((b: number, r: number) => {
     if (budgetTimer.current) clearTimeout(budgetTimer.current);
     budgetTimer.current = setTimeout(() => {
@@ -321,12 +317,11 @@ export function RpRunner({ setup, charName, userName, sceneLabel, greeting, disa
         return content.trim() ? { list: [content], idx: 0 } : null;
       });
       settle(finalTurns, summaryRef.current);
-      assistantSettledRef.current?.(content, finalTurns.filter((t) => t.role === "user").length);
       // 自动滚动摘要：超阈值就折叠（analyzer 角色），失败不打断 RP
       const plan = planRollingSummary(finalTurns, { thresholdTokens: ROLL_THRESHOLD, keepTurns: ROLL_KEEP });
       if (plan) void roll(plan);
     } catch (e) {
-      const aborted = (e as { name?: string })?.name === "AbortError";
+      const aborted = isAbort(e);
       // 收尾：半句保留（人工续写/删除），空占位移除；从本地累积量确定性重建，不读渲染态
       const halfReasoning = accReasoning.trim() || undefined;
       const regenAbort = regen && Boolean(preserve) && (!aborted || !acc.trim());
@@ -351,7 +346,9 @@ export function RpRunner({ setup, charName, userName, sceneLabel, greeting, disa
 
   const send = () => {
     const text = input.trim();
-    if (!text || running) return;
+    // rollBusy：折叠摘要进行中禁发——此时 turns 正被 roll 整列表重写，
+    // 插入新楼层会基于旧快照发请求，且折叠定稿的整列表覆盖会把新楼层抹掉
+    if (!text || running || rollBusy) return;
     setInput("");
     setAlts(null); // 旧候选随发送定稿
     void streamAssistant([...turns, { id: newTurnId(), role: "user", name: userName, content: text }]);
@@ -549,7 +546,7 @@ export function RpRunner({ setup, charName, userName, sceneLabel, greeting, disa
         <textarea
           rows={3}
           value={input}
-          disabled={disabled || running}
+          disabled={disabled || running || rollBusy}
           placeholder="描述你要说的话或动作…"
           onChange={(e) => setInput(e.target.value)}
           onKeyDown={(e) => {
@@ -563,8 +560,8 @@ export function RpRunner({ setup, charName, userName, sceneLabel, greeting, disa
       </label>
 
       <div className="row" style={{ marginTop: 8, flexWrap: "wrap" }}>
-        <button className="primary" onClick={send} disabled={disabled || running || !input.trim()}>
-          {running ? "生成中…" : "发送"}
+        <button className="primary" onClick={send} disabled={disabled || running || rollBusy || !input.trim()}>
+          {running ? "生成中…" : rollBusy ? "折叠前情中…" : "发送"}
         </button>
         <button onClick={stop} disabled={!running}>停止</button>
         <button onClick={regenerate} disabled={disabled || running || rollBusy || !turns.some((t) => t.role === "user")}>

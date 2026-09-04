@@ -20,7 +20,7 @@ import type {
 import type { RpSetup } from "./rp.js";
 import { buildTrialPack, synthesizeNarratorCard } from "./trialpack.js";
 import { ledgerSnapshot } from "./snapshot.js";
-import { progressMemoText, scriptBlock, snapshotDebt, snapshotDebtText, storyAdvance, type StoryAdvance } from "./script.js";
+import { progressMemoText, scriptBlock, snapshotDebt, snapshotDebtText, storyAdvance } from "./script.js";
 import { personaPromptBlock } from "../ai/prompts.js";
 import { exportCardV2 } from "../st/card.js";
 
@@ -48,9 +48,8 @@ export interface RoomAssemblyInput {
 export interface RoomAssembly {
   setup: RpSetup;
   greeting: string;
-  folder: string;
-  baseNote: string; // author's note 基底（纠偏重建用）
-  advance: StoryAdvance;
+  /** author's note 基底（纠偏重建用） */
+  baseNote: string;
   sceneTitle: string; // 当前幕（无剧本=自由即兴）
 }
 
@@ -143,9 +142,7 @@ export function assembleRoom(input: RoomAssemblyInput): RoomAssembly {
         loreSettings,
       },
       greeting,
-      folder: `sandbox-${room.id.slice(0, 6)}`,
       baseNote: "（自由即兴房：无剧本。保持世界一致，把主动权交给 {{user}}。）",
-      advance,
       sceneTitle: "自由即兴",
     };
   }
@@ -218,9 +215,7 @@ export function assembleRoom(input: RoomAssemblyInput): RoomAssembly {
   return {
     setup,
     greeting: built.greeting,
-    folder: built.folder,
     baseNote: built.authorNote,
-    advance,
     sceneTitle: cur.title,
   };
 }
@@ -229,7 +224,6 @@ export function assembleRoom(input: RoomAssemblyInput): RoomAssembly {
 export function newRoom(input: {
   id: string;
   projectId: string;
-  projectName: string;
   name: string;
   userName: string;
   pace: TheaterPace;

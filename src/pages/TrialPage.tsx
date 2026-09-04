@@ -20,6 +20,7 @@ import type {
   RPSession,
 } from "../core/types";
 import * as repos from "../store/repos";
+import { copyToClipboard, downloadText, errMsg, isAbort } from "../core/uiUtils";
 import {
   applyRecapToNode,
   canTransition,
@@ -59,49 +60,10 @@ const WARN_YELLOW = "#b8860b";
 /** 主演下拉的特殊取值：不使用角色卡（原创/自由试跑，由 buildTrialPack 合成旁白卡） */
 const NONE_CARD_ID = "__none__";
 
-function errMsg(e: unknown): string {
-  return e instanceof Error ? e.message : String(e);
-}
-
 /** 台账提案 type 徽标文案；非法值兜底显示 event（落库同样兜底） */
 function typeBadge(type: string | undefined): string {
   const key = (type ?? "").trim();
   return (LEDGER_TYPE_NAMES as Record<string, string>)[key] ?? "事件";
-}
-
-/** 下载一个文本文件：Blob + 临时 <a download>.click()，用完即 revoke */
-function downloadText(name: string, content: string): void {
-  const url = URL.createObjectURL(new Blob([content], { type: "text/plain;charset=utf-8" }));
-  const a = document.createElement("a");
-  a.href = url;
-  a.download = name;
-  document.body.appendChild(a);
-  a.click();
-  a.remove();
-  URL.revokeObjectURL(url);
-}
-
-/** 复制：优先 navigator.clipboard；失败/不可用降级隐藏 textarea select + execCommand */
-async function copyToClipboard(text: string): Promise<boolean> {
-  try {
-    await navigator.clipboard.writeText(text);
-    return true;
-  } catch {
-    /* 非安全上下文/权限拒绝：走降级 */
-  }
-  try {
-    const ta = document.createElement("textarea");
-    ta.value = text;
-    ta.style.position = "fixed";
-    ta.style.opacity = "0";
-    document.body.appendChild(ta);
-    ta.select();
-    const ok = document.execCommand("copy");
-    ta.remove();
-    return ok;
-  } catch {
-    return false;
-  }
 }
 
 // ============================================================
@@ -139,6 +101,9 @@ export function TrialPage({ projectId }: { projectId: string }) {
   const [checked, setChecked] = useState<boolean[]>([]); // 与 recap.proposals 对齐
   const [busy, setBusy] = useState(false);
   const [importError, setImportError] = useState<string | null>(null);
+  /** 复盘请求的可中止句柄（切页卸载即 abort；busy 期间还有「停止」按钮） */
+  const recapAbortRef = useRef<AbortController | null>(null);
+  useEffect(() => () => recapAbortRef.current?.abort(), []);
 
   // ---- 动作反馈 ----
   const [savedSession, setSavedSession] = useState<RPSession | null>(null);
@@ -317,15 +282,19 @@ export function TrialPage({ projectId }: { projectId: string }) {
     setRecap(null);
     setChecked([]);
     setBusy(true);
+    const ctrl = new AbortController();
+    recapAbortRef.current = ctrl;
     try {
       const r = await chatJSON<RecapResult>(sessionRecapPrompt(toTranscript(msgs), target), {
         role: "analyzer",
+        signal: ctrl.signal,
       });
       setRecap(r ?? {});
       setChecked(Array.isArray(r?.proposals) ? r.proposals.map(() => false) : []);
     } catch (err) {
-      setImportError(`导回分析失败：${errMsg(err)}`);
+      if (!isAbort(err)) setImportError(`导回分析失败：${errMsg(err)}`);
     } finally {
+      recapAbortRef.current = null;
       setBusy(false);
     }
   };
@@ -485,10 +454,30 @@ export function TrialPage({ projectId }: { projectId: string }) {
   const onApplyReweave = async () => {
     if (!scene || !recap) return;
     try {
-      const beats = reweaveBeats(scene, recap);
+      const draft = reweaveBeats(scene, recap);
+      const draftText = draft.map((b, i) => `${i + 1}. ${b.text}`).join("\n");
+      let beats = draft;
+      if (reweaveText.trim() !== "" && reweaveText !== draftText) {
+        // 用户在框内手改过：按行解析生效；与草案原文相同的行保留原 id/done（进度映射不错位）
+        const byText = new Map(draft.map((b) => [b.text.trim(), b]));
+        const seen = new Set<string>();
+        beats = [];
+        for (const line of reweaveText.split(/\r?\n/)) {
+          const text = line.replace(/^\s*\d+[.、)]\s*/, "").trim();
+          if (!text) continue;
+          const old = !seen.has(text) ? byText.get(text) : undefined;
+          if (old) {
+            seen.add(text);
+            beats.push({ ...old, text });
+          } else {
+            beats.push({ id: repos.uid(), text });
+          }
+        }
+        if (beats.length === 0) throw new Error("编辑框解析不出有效节拍。");
+      }
       patchNode(await repos.updateNode(scene.id, { beats }));
       setBeatMsg(
-        `反向修纲草案已落库（共 ${beats.length} 拍）。注意：落的是系统草案原文，框内手改不生效（未实现），请去大纲工作台精修。改纲后去「RP 剧场」重开本幕即可让新细纲生效（greeting 重生成；旧对话仍在会话里可查）。`,
+        `反向修纲草案已落库（共 ${beats.length} 拍，编辑框内容为准）。改纲后去「RP 剧场」重开本幕即可让新细纲生效（greeting 重生成；旧对话仍在会话里可查）。`,
       );
     } catch (e) {
       setImportError(`反向修纲落库失败：${errMsg(e)}`);
@@ -706,7 +695,6 @@ export function TrialPage({ projectId }: { projectId: string }) {
                       projectId,
                       nodeId: (s.nodeId ?? scene.id) as string,
                       charHint: [...s.messages].reverse().find((m) => m.role === "char")?.name,
-                      auto: true,
                       sessionId: s.id,
                     });
                     goTab("theater");
@@ -777,7 +765,7 @@ export function TrialPage({ projectId }: { projectId: string }) {
           </p>
         )}
         {importError && <p style={{ color: ERROR_COLOR }}>{importError}</p>}
-        {busy && <p className="muted">AI（analyzer）复盘中：实际走向摘要 + 节拍比对 + 偏差 + 台账提案…</p>}
+        {busy && <p className="muted">AI（analyzer）复盘中：实际走向摘要 + 节拍比对 + 偏差 + 台账提案… <button style={{ fontSize: 11 }} onClick={() => recapAbortRef.current?.abort()}>停止</button></p>}
 
         {recap && !busy && (
           <div style={{ marginTop: 12 }}>

@@ -5,6 +5,7 @@
 // 全局悬浮的 JobMonitor 窗实时展示 job.log。
 // ============================================================
 import { useSyncExternalStore } from "react";
+import { errMsg, isAbort } from "./uiUtils";
 
 export type JobStatus = "running" | "done" | "error" | "aborted";
 
@@ -105,10 +106,10 @@ export function startJob(input: {
       await input.task(ctx);
       job.status = ctrl.signal.aborted ? "aborted" : "done";
     } catch (e) {
-      if (e instanceof Error && e.name === "AbortError") job.status = "aborted";
+      if (isAbort(e)) job.status = "aborted";
       else {
         job.status = "error";
-        job.error = e instanceof Error ? e.message : String(e);
+        job.error = errMsg(e);
       }
     } finally {
       if (flushTimer) {

@@ -18,7 +18,6 @@ export interface Project {
   lorebook: LorebookSettings; // 世界书全局参数
   createdAt: number;
   updatedAt: number;
-  schema: number; // 数据版本号，为迁移预留（当前 = 1）
 }
 
 // ---------- 构思档案 Story Bible ----------
@@ -97,12 +96,10 @@ export interface Character {
   id: ID;
   projectId: ID;
   name: string;
-  nick?: string; // {{char}} 昵称
   profile: CharacterProfile;
   scenario?: string;
   greeting?: string; // first_mes
   mesExample?: string; // 原始对话示例文本
-  state: string; // 台账维护的动态状态摘要（伤病/位置/知情范围…），空=未启用
   source: CharacterSource;
   cardFormat: CardFormat;
   rawCard?: unknown; // 原始 ST 卡 JSON 原样保留（roundtrip 无损）
@@ -208,9 +205,6 @@ export interface RPMessage {
   role: "user" | "char" | "system";
   name: string;
   content: string;
-  ooc?: boolean;
-  branchOf?: ID | null; // 分支父消息
-  editedFrom?: ID | null;
   createdAt: number;
   reasoning?: string; // 推理模型的思维链（可折叠查看；provider 未返回则无）
   notes?: string[]; // 场记 agent 挂在本条上的活动（工具调用/进度标记），随消息持久

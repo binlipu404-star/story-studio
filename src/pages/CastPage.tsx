@@ -22,6 +22,7 @@ import type { Character, RawLorebook } from "../core/types";
 import { exportCardV2, importCardBytes, parsedCardToCharacter } from "../st/card";
 import { toLoreEntries } from "../st/lorebook";
 import * as repos from "../store/repos";
+import { downloadJson, errMsg } from "../core/uiUtils";
 import { db } from "../store/db";
 import { loadProgress, saveProgress } from "../flow/progress";
 
@@ -37,23 +38,6 @@ const BADGE_STYLE: CSSProperties = {
   color: "var(--muted)",
   whiteSpace: "nowrap",
 };
-
-/** 统一 Blob 下载小工具：createObjectURL → a.click → revoke */
-function downloadJson(fileName: string, data: unknown): void {
-  const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement("a");
-  a.href = url;
-  a.download = fileName;
-  document.body.appendChild(a);
-  a.click();
-  a.remove();
-  URL.revokeObjectURL(url);
-}
-
-function errMsg(err: unknown): string {
-  return err instanceof Error ? err.message : String(err);
-}
 
 /** greeting 首行预览：第一条非空行 */
 function firstLine(text: string | undefined): string {
@@ -192,7 +176,6 @@ export function CastPage({ projectId }: { projectId: string }) {
       const ch = await repos.addCharacter(projectId, {
         name: "新人物",
         profile: { appearance: "", personality: "", background: "", speechStyle: "", exampleLines: [] },
-        state: "",
         source: "manual",
         cardFormat: "internal",
       });
@@ -210,23 +193,27 @@ export function CastPage({ projectId }: { projectId: string }) {
 
   const saveDraft = async () => {
     if (!editingId || !draft) return;
-    await repos.updateCharacter(editingId, {
-      name: draft.name.trim(),
-      profile: {
-        appearance: draft.appearance,
-        personality: draft.personality,
-        background: draft.background,
-        speechStyle: draft.speechStyle,
-        exampleLines: draft.exampleLinesText
-          .split(/\r?\n/)
-          .map((s) => s.trim())
-          .filter(Boolean),
-      },
-      scenario: draft.scenario,
-      greeting: draft.greeting,
-    });
-    await refresh();
-    setFlash(`已保存「${draft.name.trim() || "未命名"}」`);
+    try {
+      await repos.updateCharacter(editingId, {
+        name: draft.name.trim(),
+        profile: {
+          appearance: draft.appearance,
+          personality: draft.personality,
+          background: draft.background,
+          speechStyle: draft.speechStyle,
+          exampleLines: draft.exampleLinesText
+            .split(/\r?\n/)
+            .map((s) => s.trim())
+            .filter(Boolean),
+        },
+        scenario: draft.scenario,
+        greeting: draft.greeting,
+      });
+      await refresh();
+      setFlash(`已保存「${draft.name.trim() || "未命名"}」`);
+    } catch (err) {
+      setFlash(`保存失败：${errMsg(err)}`);
+    }
   };
 
   const exportOne = (c: Character) => {
@@ -235,12 +222,16 @@ export function CastPage({ projectId }: { projectId: string }) {
 
   const removeOne = async (c: Character) => {
     if (!window.confirm(`删除人物「${c.name || "（未命名）"}」？此操作不可恢复。`)) return;
-    await repos.removeCharacter(c.id);
-    if (editingId === c.id) {
-      setEditingId(null);
-      setDraft(null);
+    try {
+      await repos.removeCharacter(c.id);
+      if (editingId === c.id) {
+        setEditingId(null);
+        setDraft(null);
+      }
+      await refresh();
+    } catch (err) {
+      setFlash(`删除失败：${errMsg(err)}`);
     }
-    await refresh();
   };
 
   /** 卡内嵌书落库：统一从 nextUid 起号（忽略卡内自带 uid/id），返回新增条数 */

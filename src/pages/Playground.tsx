@@ -3,10 +3,7 @@ import type { ChatMessage } from "../core/types";
 import { chat, type ChatRole } from "../ai/client";
 import { extractJson } from "../ai/json";
 import { estimateTokens } from "../ai/tokenizer";
-
-function errMsg(e: unknown): string {
-  return e instanceof Error ? e.message : String(e);
-}
+import { errMsg, isAbort } from "../core/uiUtils";
 
 export function Playground() {
   const [system, setSystem] = useState("你是一个有帮助的写作助手。");
@@ -23,6 +20,9 @@ export function Playground() {
 
   const controllerRef = useRef<AbortController | null>(null);
   const preRef = useRef<HTMLPreElement>(null);
+
+  // 切页即卸载：在飞请求随之中止（不留后台悄悄烧 token 的流）
+  useEffect(() => () => controllerRef.current?.abort(), []);
 
   // 发送前的提示词估算（system + user 正文，不含回复与协议开销）
   const promptTokens = estimateTokens(system) + estimateTokens(user);
@@ -77,8 +77,7 @@ export function Playground() {
       setOutput(out.content);
       setElapsed(Date.now() - t0);
     } catch (e) {
-      const name = (e as { name?: string })?.name;
-      if (name === "AbortError") setError("已停止");
+      if (isAbort(e)) setError("已停止");
       else setError(errMsg(e));
       setElapsed(Date.now() - t0);
     } finally {

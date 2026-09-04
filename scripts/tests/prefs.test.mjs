@@ -25,12 +25,12 @@ export default async function (t) {
   {
     const p = parsePrefs(JSON.stringify({ pace: "wild", scopeMode: "x", ledgerCadence: -5, budgetTokens: 3, reserveTokens: "z", lastCharId: 42 }));
     t.eq(p.pace, "loose", "3. 非法 pace 落默认");
-    t.eq(p.scopeMode, "full", "3. 非法 scopeMode 落默认");
+    t.ok(!("scopeMode" in p), "3. 已废弃 scopeMode 不进结果");
     t.eq(p.ledgerCadence, DEFAULT_PREFS.ledgerCadence, "3. 负楼层落默认（v3.1 默认=1 每楼自动）");
     t.eq(DEFAULT_PREFS.ledgerCadence, 1, "3. 默认楼层频率=1（场记每楼自动标进度）");
     t.eq(p.budgetTokens, 8192, "3. 过小预算落默认");
     t.eq(p.reserveTokens, 768, "3. 非数预留落默认");
-    t.eq(p.lastCharId, "", "3. 非串字段忽略");
+    t.ok(!("lastCharId" in p), "3. 已废弃 lastCharId 不进结果");
   }
 
   // 4. 合法边界保留

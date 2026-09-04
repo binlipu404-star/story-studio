@@ -4,6 +4,7 @@ import { loadAppConfig, saveAppConfig } from "../ai/config";
 import { chat, type ChatRole } from "../ai/client";
 import { clearAllProgress } from "../flow/progress";
 import { clearPrefs } from "../flow/prefs";
+import { errMsg } from "../core/uiUtils";
 
 interface TestState {
   running: boolean;
@@ -18,10 +19,6 @@ const ROLES: { role: ChatRole; label: string; hint: string }[] = [
   { role: "writer", label: "创作模型", hint: "RP 续写 / 大纲草稿" },
   { role: "analyzer", label: "分析模型", hint: "抽取 / 判断 / 整理" },
 ];
-
-function errMsg(e: unknown): string {
-  return e instanceof Error ? e.message : String(e);
-}
 
 /** 数字输入 → number | undefined（空串/坏值回落 undefined，即“跟随默认”） */
 function parseNum(raw: string): number | undefined {

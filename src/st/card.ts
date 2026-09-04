@@ -491,7 +491,6 @@ export function parsedCardToCharacter(parsed: ParsedCard, projectId: string): Ch
     scenario: parsed.scenario,
     greeting: parsed.firstMes,
     mesExample: parsed.mesExample,
-    state: "",
     source: "st-import",
     cardFormat: parsed.format,
     rawCard: parsed.raw,

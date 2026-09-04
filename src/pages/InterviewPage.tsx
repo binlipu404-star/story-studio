@@ -8,11 +8,12 @@
 import { useEffect, useRef, useState, type CSSProperties } from "react";
 import type { BibleField, BibleFieldStatus, BibleRevision, ChatMessage, Project } from "../core/types";
 import * as repos from "../store/repos";
+import { errMsg, isAbort } from "../core/uiUtils";
 import { bibleProgress, firstFocus, mergeBibleUpdates } from "../flow/interview.js";
 import { interviewSystemPrompt, type InterviewTurn } from "../ai/prompts";
 import { chat } from "../ai/client";
 import { extractJson } from "../ai/json";
-import { loadProgress, saveProgress } from "../flow/progress";
+import { loadProgress, makeDebouncer, saveProgress } from "../flow/progress";
 
 const MSG_LIMIT = 100; // 聊天记录 localStorage 上限
 const REV_LIMIT = 20; // revisions 裁剪上限
@@ -56,15 +57,6 @@ const STATUS_STYLE: Record<BibleFieldStatus, CSSProperties> = {
 const badgeBase: CSSProperties = { fontSize: 12, lineHeight: "18px", borderRadius: 999, padding: "0 8px" };
 
 // ---------- 工具函数 ----------
-
-function errMsg(e: unknown): string {
-  return e instanceof Error ? e.message : String(e);
-}
-
-/** 用户主动中止：fetch/reader 抛出的 AbortError 单独识别，不进红色错误行 */
-function isAbortError(e: unknown): boolean {
-  return typeof e === "object" && e !== null && (e as { name?: unknown }).name === "AbortError";
-}
 
 /** 按首次出现序分组（不依赖数组相邻性） */
 function groupFields(fields: BibleField[]): { name: string; fields: BibleField[] }[] {
@@ -212,14 +204,29 @@ export function InterviewPage({ projectId }: { projectId: string }) {
     }
     if (Object.keys(drafts).length > 0) setDrafts(drafts);
   }, [dataReady, projectId, project]);
-  useEffect(() => {
+  // 进度持久化：访谈输入每击键触发整个草稿回写，改为 400ms 防抖；
+  // 卸载/关页前 flushNow 兜底，不丢最后一笔。
+  const progressWriteRef = useRef<() => void>(() => {});
+  progressWriteRef.current = () => {
     if (!dataReady || draftRestoredFor.current !== projectId) return;
     const slim: Record<string, string> = {};
     for (const [k, v] of Object.entries(drafts)) {
       if (v && v.trim()) slim[k] = v.slice(0, DRAFT_TEXT_MAX);
     }
     saveProgress("interview", projectId, { inputDraft: input.slice(0, DRAFT_TEXT_MAX), drafts: slim });
+  };
+  const progressDeb = useRef(makeDebouncer(400, () => progressWriteRef.current()));
+  useEffect(() => {
+    progressDeb.current.bump();
   }, [dataReady, projectId, input, drafts]);
+  useEffect(() => {
+    const flush = () => progressDeb.current.flushNow();
+    window.addEventListener("pagehide", flush);
+    return () => {
+      window.removeEventListener("pagehide", flush);
+      progressDeb.current.flushNow();
+    };
+  }, []);
 
   // 卸载：清 toast 定时器 + 中止在途流
   useEffect(
@@ -373,7 +380,7 @@ export function InterviewPage({ projectId }: { projectId: string }) {
       }
       patchLast((m) => (proposals ? { ...m, content: bubble, proposals } : { ...m, content: bubble }));
     } catch (e) {
-      if (!isAbortError(e)) setChatError(errMsg(e)); // AbortError=用户点「停止」，静默
+      if (!isAbort(e)) setChatError(errMsg(e)); // AbortError=用户点「停止」，静默
       dropEmptyLast();
     } finally {
       setStreaming(false);

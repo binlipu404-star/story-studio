@@ -125,12 +125,16 @@ export async function startOrganize(input: OrganizeInput): Promise<void> {
     io.onCanonChanged(roomId);
   };
 
-  try {
-    const turns = fresh0.messages
+  // 整理用转写：最近 24 条非空消息（tools 主路与降级路共用）
+  const transcriptOf = (msgs: typeof fresh0.messages) =>
+    msgs
       .filter((m) => m.content.trim())
       .slice(-24)
       .map((m) => `${m.name}：${m.content.trim()}`)
       .join("\n\n");
+
+  try {
+    const turns = transcriptOf(fresh0.messages);
     const floors = fresh0.messages.filter((m) => m.role === "user").length;
     if (!turns.trim()) {
       if (mode === "manual") say("没什么可整理的：对话还是空的。");
@@ -186,11 +190,7 @@ export async function startOrganize(input: OrganizeInput): Promise<void> {
         if (!fresh) {
           say("房间已不存在，整理中止。");
         } else {
-          const turns = fresh.messages
-            .filter((m) => m.content.trim())
-            .slice(-24)
-            .map((m) => `${m.name}：${m.content.trim()}`)
-            .join("\n\n");
+          const turns = transcriptOf(fresh.messages);
           const obj = await chatJSON<unknown>(rollingDigestPrompt(fresh.rollingSummary ?? "", turns), { role: "analyzer" });
           const d = sanitizeDigest(obj);
           if (d.ledger.length) {

@@ -14,8 +14,6 @@ export interface TheaterHandoff {
   nodeId: string;
   /** 会话里最后的角色名：剧场据此自动选中人物卡（找不到则维持默认） */
   charHint?: string;
-  /** true = 载入后立即自动开台（「续写」跳转） */
-  auto?: boolean;
   /** 把这条试跑工作会话的对话导入新建房间（「续写（去剧场）」） */
   sessionId?: string;
   ts: number;
@@ -79,7 +77,6 @@ export function parseHandoff(
       projectId: pid,
       nodeId: r.nodeId,
       ...(typeof r.charHint === "string" && r.charHint ? { charHint: r.charHint } : {}),
-      ...(r.auto === true ? { auto: true } : {}),
       ...(typeof r.sessionId === "string" && r.sessionId ? { sessionId: r.sessionId } : {}),
       ts,
     };

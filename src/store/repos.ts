@@ -78,7 +78,6 @@ export async function createProject(title: string, synopsis: string): Promise<Pr
     lorebook: { ...DEFAULT_LOREBOOK_SETTINGS },
     createdAt: now,
     updatedAt: now,
-    schema: 1,
   };
   await db.projects.add(project);
   return project;
@@ -228,13 +227,12 @@ function emptyProfile(): CharacterProfile {
   return { appearance: "", personality: "", background: "", speechStyle: "", exampleLines: [] };
 }
 
-/** 新增人物：默认空 profile/state、source="manual"、cardFormat="internal"；partial 覆盖默认。 */
+/** 新增人物：默认空 profile、source="manual"、cardFormat="internal"；partial 覆盖默认。 */
 export async function addCharacter(projectId: ID, partial: CharacterPatch = {}): Promise<Character> {
   const now = Date.now();
   const character: Character = {
     name: "",
     profile: emptyProfile(),
-    state: "",
     source: "manual",
     cardFormat: "internal",
     ...partial,

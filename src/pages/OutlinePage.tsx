@@ -26,6 +26,7 @@ import type {
 import * as repos from "../store/repos";
 import type { OutlineNodePatch } from "../store/repos";
 import { db } from "../store/db";
+import { copyToClipboard, downloadText, errMsg, isAbort } from "../core/uiUtils";
 import {
   beatsFromStrings,
   canTransition,
@@ -35,6 +36,7 @@ import {
   lineageOf,
   masterToNodes,
   preorder,
+  STATUS_NAMES as STATUS_LABELS,
   treeToMarkdown,
   validatePlacement,
   type MasterOutlineJson,
@@ -52,7 +54,7 @@ import {
 } from "../ai/prompts";
 import { draftToBookScenes, outlineBookJson, type OutlineBookScene } from "../flow/outlinebook";
 import { ledgerFacts } from "../flow/snapshot";
-import { loadProgress, saveProgress } from "../flow/progress";
+import { loadProgress, makeDebouncer, saveProgress } from "../flow/progress";
 
 // ---------- 展示常量 ----------
 
@@ -62,13 +64,7 @@ const LEVEL_ICONS: Record<OutlineLevel, string> = {
   scene: "🎬",
   beat: "•",
 };
-const STATUS_LABELS: Record<OutlineStatus, string> = {
-  idea: "灵感",
-  draft: "草案",
-  refined: "细化",
-  tested: "已试跑",
-  locked: "已锁定",
-};
+// 状态中文名单一来源：flow/outline.STATUS_NAMES（页面不再复制第二份）
 const ALL_STATUSES: OutlineStatus[] = ["idea", "draft", "refined", "tested", "locked"];
 const STRUCTURES: OutlineStructure[] = ["three-act", "kishotenketsu", "hero"];
 
@@ -115,45 +111,6 @@ const fieldStack: CSSProperties = {
 
 // ---------- 防御式解析小工具（AI 返回一律 unknown 进、安全字段出） ----------
 
-function errMsg(e: unknown): string {
-  return e instanceof Error ? e.message : String(e);
-}
-function isAbort(e: unknown): boolean {
-  return e instanceof Error && e.name === "AbortError";
-}
-/** 下载一个文本文件：Blob + 临时 <a download>.click()，用完即 revoke */
-function downloadText(name: string, content: string): void {
-  const url = URL.createObjectURL(new Blob([content], { type: "text/plain;charset=utf-8" }));
-  const a = document.createElement("a");
-  a.href = url;
-  a.download = name;
-  document.body.appendChild(a);
-  a.click();
-  a.remove();
-  URL.revokeObjectURL(url);
-}
-/** 复制：优先 navigator.clipboard；失败/不可用降级隐藏 textarea select + execCommand */
-async function copyToClipboard(text: string): Promise<boolean> {
-  try {
-    await navigator.clipboard.writeText(text);
-    return true;
-  } catch {
-    /* 非安全上下文/权限拒绝：走降级 */
-  }
-  try {
-    const ta = document.createElement("textarea");
-    ta.value = text;
-    ta.style.position = "fixed";
-    ta.style.opacity = "0";
-    document.body.appendChild(ta);
-    ta.select();
-    const ok = document.execCommand("copy");
-    ta.remove();
-    return ok;
-  } catch {
-    return false;
-  }
-}
 function asRecord(v: unknown): Record<string, unknown> | null {
   return v && typeof v === "object" && !Array.isArray(v) ? (v as Record<string, unknown>) : null;
 }
@@ -212,6 +169,9 @@ export function OutlinePage({ projectId }: { projectId: string }) {
   // 全局 AI 忙碌态：所有 chatJSON 共用一个 AbortController + 一个停止按钮
   const [busy, setBusy] = useState<string | null>(null);
   const abortRef = useRef<AbortController | null>(null);
+  // 切页即卸载（App 条件渲染）：在飞的 runAI 请求随之中止，不让它悄悄烧 token；
+  // 后台总纲任务走 jobBus 不受影响（那是设计上要跨页存活的任务）。
+  useEffect(() => () => abortRef.current?.abort(), []);
 
   // 生成总纲走后台任务总线：切页/卸载不打断，完成即在任务闭包落库
   const jobs = useJobs();
@@ -441,14 +401,17 @@ export function OutlinePage({ projectId }: { projectId: string }) {
         const rec = asRecord(value);
         const beats = beatsFromStrings(Array.isArray(rec?.beats) ? (rec?.beats as unknown[]) : [], repos.uid);
         if (beats.length > 0) {
-          await db.outlineNodes.update(sc.id, { beats, updatedAt: Date.now() });
+          // 必须走 repos.updateNode（revision+1）：编辑器 key 含 revision，会重挂载同步草稿态。
+          // 直写 db 不动 revision → 打开着的编辑器仍持旧副本，下一次保存静默抹掉 AI 填的节拍。
+          await repos.updateNode(sc.id, { beats });
           filled++;
         }
       }
       return filled;
     });
+    // 部分写入也要可见：中途出错/停止时已写入的幕立即刷新上树（原来只在整体成功时 reload）
+    await reload();
     if (r.ok) {
-      await reload();
       setInfo(`AI 填充细纲完成：${filled}/${targets.length} 幕已写入节拍（停止或失败的幕保持空，可重试）。`);
     }
   };
@@ -492,10 +455,25 @@ export function OutlinePage({ projectId }: { projectId: string }) {
     if (saved.selectedId && nodes.some((n) => n.id === saved.selectedId)) setSelectedId(saved.selectedId);
     if (typeof saved.coachInput === "string" && saved.coachInput) setCoachInput(saved.coachInput.slice(0, 4000));
   }, [loaded, nodes, projectId]);
-  useEffect(() => {
+  // 进度持久化：coachInput 每击键都会触发整个进度回写 localStorage，改为 400ms 防抖；
+  // 卸载/关页前 flushNow 兜底，不丢最后一笔。
+  const progressWriteRef = useRef<() => void>(() => {});
+  progressWriteRef.current = () => {
     if (!loaded || selRestoredFor.current !== projectId) return;
     saveProgress("outline", projectId, { selectedId, coachInput: coachInput.slice(0, 4000) });
+  };
+  const progressDeb = useRef(makeDebouncer(400, () => progressWriteRef.current()));
+  useEffect(() => {
+    progressDeb.current.bump();
   }, [loaded, projectId, selectedId, coachInput]);
+  useEffect(() => {
+    const flush = () => progressDeb.current.flushNow();
+    window.addEventListener("pagehide", flush);
+    return () => {
+      window.removeEventListener("pagehide", flush);
+      progressDeb.current.flushNow();
+    };
+  }, []);
 
   // 总纲任务终结 → 播报并刷新；首次进入时已终结的任务记为已知
   // （它们的结果早已落库，上面的 reload 已把数据带进来，不重复播报）。
@@ -711,13 +689,8 @@ export function OutlinePage({ projectId }: { projectId: string }) {
       window.alert("大纲为空，没有可导出的内容。");
       return;
     }
-    const md = treeToMarkdown(nodes);
-    const url = URL.createObjectURL(new Blob([md], { type: "text/markdown;charset=utf-8" }));
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = "outline.md";
-    a.click();
-    URL.revokeObjectURL(url);
+    // downloadText：带 body 挂载的下载（Firefox 无此不触发）+ 统一 revoke，勿再手搓
+    downloadText("outline.md", treeToMarkdown(nodes));
   }
 
   // ---------- 树：手动加子节点（层级下拉 = validatePlacement 允许的组合） ----------
@@ -1172,7 +1145,6 @@ export function OutlinePage({ projectId }: { projectId: string }) {
                     </p>
                   </div>
                 )}
-                {info && bookOut && <p className="muted">{info}</p>}
               </>
             )}
           </div>
@@ -1340,9 +1312,27 @@ function NodeEditor({ node, characters, busy, pathLabel, onSave, onStatus, onDel
     const patch: OutlineNodePatch = {};
     if (proposal.title) patch.title = proposal.title; // 非空才覆盖
     if (proposal.intent) patch.intent = proposal.intent;
-    patch.beats = beatsFromStrings(proposal.beats, repos.uid);
+    // 按文本对位沿用旧节拍：同文保旧 id（done 已演标记不丢——世界书跳过逻辑靠它），
+    // 提案改过/新增的行才发新 id；纯 beatsFromStrings 会全部换新 id 抹掉 done。
+    const byText = new Map(node.beats.map((b) => [b.text.trim(), b]));
+    const seen = new Set<string>();
+    const beats: Beat[] = [];
+    for (const t of proposal.beats) {
+      const text = t.trim();
+      if (!text) continue;
+      const old = !seen.has(text) ? byText.get(text) : undefined;
+      if (old) {
+        seen.add(text);
+        beats.push({ ...old, text });
+      } else {
+        beats.push({ id: repos.uid(), text });
+      }
+    }
+    patch.beats = beats;
+    // 从编辑器当前草稿（foreshadows state）合并，而非陈旧的 node：
+    // 用户未保存的伏笔增删改不能被应用提案静默回滚。
     patch.foreshadows = [
-      ...node.foreshadows,
+      ...foreshadows.filter((f) => f.setup.trim()),
       ...proposal.foreshadows.map((f) => ({
         id: repos.uid(),
         setup: f.setup,

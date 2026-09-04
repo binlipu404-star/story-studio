@@ -7,10 +7,7 @@
 export interface TheaterPrefs {
   v: 1;
   lastProjectId: string;
-  lastCharId: string; // "" = 旁白
-  lastPersonaId: string; // "" = 不设
   pace: "tight" | "loose";
-  scopeMode: "full" | "chapters";
   ledgerCadence: number; // 每 N 个用户楼层整理一次台账；0=关；1=每楼自动（v3.1 默认）
   budgetTokens: number;
   reserveTokens: number;
@@ -21,10 +18,7 @@ export interface TheaterPrefs {
 export const DEFAULT_PREFS: TheaterPrefs = {
   v: 1,
   lastProjectId: "",
-  lastCharId: "",
-  lastPersonaId: "",
   pace: "loose",
-  scopeMode: "full",
   ledgerCadence: 1,
   budgetTokens: 8192,
   reserveTokens: 768,
@@ -50,11 +44,8 @@ export function parsePrefs(raw: string | null | undefined): TheaterPrefs {
     if (typeof r[k] === "string") (base[k] as string) = r[k] as string;
   };
   str("lastProjectId");
-  str("lastCharId");
-  str("lastPersonaId");
   str("lastRoomId");
   if (r.pace === "tight" || r.pace === "loose") base.pace = r.pace;
-  if (r.scopeMode === "full" || r.scopeMode === "chapters") base.scopeMode = r.scopeMode;
   if (typeof r.ledgerCadence === "number" && Number.isFinite(r.ledgerCadence)) {
     const n = Math.floor(r.ledgerCadence);
     if (n >= 0 && n <= 100) base.ledgerCadence = n;

@@ -418,21 +418,3 @@ export function sessionRecapPrompt(
     },
   ];
 }
-
-// ---------- M5 自建 RP 引擎（先备好系统提示，引擎稍后接） ----------
-
-export interface RpSystemOpts {
-  userName: string;
-  charNames: string[];
-  styleInstructions: string; // 文风/POV/时态/尺度约束
-}
-
-export function rpSystemPrompt(opts: RpSystemOpts): string {
-  return [
-    `你扮演 ${opts.charNames.join(" 与 ")} 以及全部配角与旁白；用户扮演 ${opts.userName}。`,
-    "永远不替用户角色说话、行动或做决定；一次回复聚焦当前场面，推进但不抢节拍。",
-    "保持各角色口吻、知情范围（角色不知道的事不能引用）与世界书设定一致。",
-    opts.styleInstructions,
-    "输出：小说式叙事+对白，长度跟随场面张力；不要输出 OOC 说明，除非用户以 OOC 起头。",
-  ].join("\n");
-}

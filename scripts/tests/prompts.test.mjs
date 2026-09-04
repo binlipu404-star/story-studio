@@ -11,7 +11,6 @@ import {
   trialAuthorNote,
   trialPackReadme,
   sessionRecapPrompt,
-  rpSystemPrompt,
   MASTER_OUTLINE_SPEC,
 } from "../../dist-test/ai/prompts.js";
 
@@ -123,6 +122,4 @@ export default async function (t) {
   t.eq(beatsToLines([B("甲"), B("乙", true)]), "1. 甲\n2. 乙（已上演）", "beatsToLines 序号与完成标记");
   const dg = nodeDigest(N({}), { withBeats: true });
   t.ok(dg.includes("幕") && dg.includes("细化") && dg.includes("匕首伏笔"), "nodeDigest 含层级/状态/意图");
-  const rp = rpSystemPrompt({ userName: "旅行者", charNames: [" Morgana "], styleInstructions: "第二人称现在时" });
-  t.ok(rp.includes("不替用户角色说话") && rp.includes("旅行者"), "RP 系统提示含核心约束");
 }

@@ -1,5 +1,6 @@
 import type { ChatMessage } from "../core/types";
 import type { AgentMessage, ToolCall, ToolSpec } from "../flow/agent";
+import { errMsg } from "../core/uiUtils";
 import { loadAppConfig } from "./config";
 import { extractJson } from "./json";
 
@@ -32,10 +33,6 @@ interface SseChunk {
   choices?: {
     delta?: { content?: unknown; reasoning_content?: unknown };
   }[];
-}
-
-function errMsg(e: unknown): string {
-  return e instanceof Error ? e.message : String(e);
 }
 
 /**

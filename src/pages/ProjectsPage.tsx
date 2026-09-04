@@ -6,6 +6,7 @@
 import { useCallback, useEffect, useRef, useState, type FormEvent } from "react";
 import type { Project } from "../core/types";
 import * as repos from "../store/repos";
+import { downloadBlob, errMsg, formatTime } from "../core/uiUtils";
 import { bundleZipBytes } from "../flow/bundle";
 import { goTab } from "../flow/nav";
 import { peekHandoff, putHandoff } from "../flow/handoff";
@@ -26,20 +27,6 @@ const WS_TABS: { id: WsTab; label: string }[] = [
   { id: "lore", label: "世界书" },
 ];
 
-function formatTime(ts: number): string {
-  return new Date(ts).toLocaleString();
-}
-
-/** 二进制下载（zip） */
-function downloadBlob(name: string, bytes: Uint8Array) {
-  const url = URL.createObjectURL(new Blob([(bytes.slice(0).buffer as ArrayBuffer)], { type: "application/zip" }));
-  const a = document.createElement("a");
-  a.href = url;
-  a.download = name;
-  a.click();
-  setTimeout(() => URL.revokeObjectURL(url), 30_000);
-}
-
 // ------------------------------------------------------------
 // 入口：作品列表 + 新建表单；点开进入 ProjectWorkspace（同文件组件）
 // ------------------------------------------------------------
@@ -56,7 +43,7 @@ export function ProjectsPage() {
       setProjects(await repos.listProjects());
       setError(null);
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
+      setError(errMsg(err));
     } finally {
       setLoaded(true);
     }
@@ -110,10 +97,14 @@ export function ProjectsPage() {
     e.preventDefault();
     const t = title.trim();
     if (!t) return;
-    await repos.createProject(t, synopsis.trim());
-    setTitle("");
-    setSynopsis("");
-    await refresh();
+    try {
+      await repos.createProject(t, synopsis.trim());
+      setTitle("");
+      setSynopsis("");
+      await refresh();
+    } catch (err) {
+      setError(errMsg(err));
+    }
   };
 
   const removeProject = async (p: Project) => {
@@ -124,8 +115,12 @@ export function ProjectsPage() {
     ) {
       return;
     }
-    await repos.deleteProjectCascade(p.id);
-    await refresh();
+    try {
+      await repos.deleteProjectCascade(p.id);
+      await refresh();
+    } catch (err) {
+      setError(errMsg(err));
+    }
   };
 
   return (
@@ -210,7 +205,7 @@ function ProjectWorkspace({ project, onBack }: { project: Project; onBack: () =>
         setExportMsg("作品不存在（可能已被删除）。");
         return;
       }
-      // 剧场房间（跨作品共享 sessions 表，projectId 已隔离）：一并进包
+      // 剧场房间与试跑会话同在 sessions 表（projectId 已隔离），随包整体导出
       const rooms = sessions.filter((s) => s.kind === "theater");
       const bytes = bundleZipBytes({
         project: proj,
@@ -218,13 +213,13 @@ function ProjectWorkspace({ project, onBack }: { project: Project; onBack: () =>
         characters: chars,
         loreEntries: lore,
         ledger,
-        sessions: [...sessions.filter((s) => s.kind !== "theater"), ...rooms],
+        sessions,
       });
       const safeTitle = (proj.title || "story").replace(/[\\/:*?"<>|]/g, "_");
       downloadBlob(`${safeTitle}-story-studio.zip`, bytes);
       setExportMsg(`已导出 ${(bytes.length / 1024).toFixed(0)} KB${rooms.length ? `（含 ${rooms.length} 个剧场房间）` : ""}。`);
     } catch (e) {
-      setExportMsg(`导出失败：${e instanceof Error ? e.message : String(e)}`);
+      setExportMsg(`导出失败：${errMsg(e)}`);
     } finally {
       setExporting(false);
     }
@@ -232,7 +227,7 @@ function ProjectWorkspace({ project, onBack }: { project: Project; onBack: () =>
 
   /** 作品级台账的「导去剧场演」：投递后跳顶层剧场页自动开房（剧本=当前全纲快照） */
   const toTheater = () => {
-    putHandoff({ kind: "theater", projectId: project.id, nodeId: "", auto: true });
+    putHandoff({ kind: "theater", projectId: project.id, nodeId: "" });
     goTab("theater");
   };
 
@@ -252,7 +247,7 @@ function ProjectWorkspace({ project, onBack }: { project: Project; onBack: () =>
       });
       setError(null);
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
+      setError(errMsg(err));
     }
   }, [project.id]);
 
@@ -262,8 +257,12 @@ function ProjectWorkspace({ project, onBack }: { project: Project; onBack: () =>
 
   const removeProject = async () => {
     if (!window.confirm(`删除作品《${project.title}》及其全部数据（大纲/人物/世界书/会话/台账/RP 剧场中挂在本作品下的全部房间与房间正典）？此操作不可恢复。`)) return;
-    await repos.deleteProjectCascade(project.id);
-    onBack();
+    try {
+      await repos.deleteProjectCascade(project.id);
+      onBack();
+    } catch (err) {
+      setError(errMsg(err));
+    }
   };
 
   const num = (n: number | undefined) => (stats ? String(n ?? 0) : "…");

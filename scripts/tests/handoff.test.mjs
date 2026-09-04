@@ -6,12 +6,11 @@ const NOW = 1_700_000_000_000;
 export default async function (t) {
   // 1. 三类正常往返
   {
-    const th = { kind: "theater", projectId: "p1", nodeId: "n1", charHint: "薇薇安", auto: true, ts: NOW };
+    const th = { kind: "theater", projectId: "p1", nodeId: "n1", charHint: "薇薇安", ts: NOW };
     const p = parseHandoff(serializeHandoff(th), { kind: "theater", projectId: "p1", now: NOW });
     t.eq(p && p.kind, "theater", "1. theater 往返");
     t.eq(p && p.nodeId, "n1", "1. nodeId 保留");
     t.eq(p && p.charHint, "薇薇安", "1. charHint 保留");
-    t.eq(p && p.auto, true, "1. auto 保留");
     const rc = parseHandoff(serializeHandoff({ kind: "recap", projectId: "p1", nodeId: "n1", ts: NOW }), {
       kind: "recap", projectId: "p1", now: NOW,
     });

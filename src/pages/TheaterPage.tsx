@@ -36,6 +36,7 @@ import {
   detectMainScriptUpdate,
   mergeProgressOnSync,
   planLedgerCadence,
+  roomScope,
   scenesOfChapters,
   storyAdvance,
 } from "../flow/script";
@@ -48,19 +49,7 @@ import { RoomDiskWriter, fsSupported, roomFileName, type FsAutoStatus } from "..
 import { toStChatJsonl } from "../st/chatlog";
 import { RpRunner } from "../components/RpRunner";
 import { RoomLedgerPanel } from "../components/RoomLedgerPanel";
-
-function errMsg(e: unknown): string {
-  return e instanceof Error ? e.message : String(e);
-}
-
-function downloadText(name: string, text: string) {
-  const url = URL.createObjectURL(new Blob([text], { type: "application/x-ndjson;charset=utf-8" }));
-  const a = document.createElement("a");
-  a.href = url;
-  a.download = name;
-  a.click();
-  setTimeout(() => URL.revokeObjectURL(url), 30_000);
-}
+import { downloadText, errMsg, isAbort } from "../core/uiUtils";
 
 export function TheaterPage() {
   // ---- 全局数据 ----
@@ -88,7 +77,6 @@ export function TheaterPage() {
   const [corrections, setCorrections] = useState<string[]>([]);
   const [correctionText, setCorrectionText] = useState("");
   const [note, setNote] = useState<string | null>(null);
-  const [rpMountKey, setRpMountKey] = useState(0);
 
   // ---- 场记 agent（v3.1-①：run 活在模块注册表里，切页不中断；这里只是订阅视图）----
   const [agentSteps, setAgentSteps] = useState<string[]>([]);
@@ -124,7 +112,7 @@ export function TheaterPage() {
       await w.pick();
       setNote(`已连接文件夹「${w.status.dirName}」：此后每轮稳定落定都会覆盖写 <房间名>-<id6>.jsonl（全量快照）。`);
     } catch (e) {
-      if (!(e instanceof Error && e.name === "AbortError")) setNote(`连接文件夹失败：${errMsg(e)}`);
+      if (!isAbort(e)) setNote(`连接文件夹失败：${errMsg(e)}`);
     }
   };
 
@@ -235,7 +223,7 @@ export function TheaterPage() {
         setCorrections([]);
         setAgentSteps([]);
         setAgentDowngraded(false);
-        setRpMountKey((k) => k + 1); // 显式换台意图：重挂 runner
+        // 无需额外 bump key：RpRunner 以 activeRoom.id 为 key，切房间必然重挂载并水合 initial
       } catch (e) {
         if (!dead) setNote(`房间数据加载失败：${errMsg(e)}`);
       }
@@ -300,8 +288,8 @@ export function TheaterPage() {
   // 主纲又变了？（仅 full 模式提示；chapters 模式设计上不敏感）
   const mainUpdated = useMemo(() => {
     if (!activeRoom || activeRoom.sandbox || !activeRoom.script) return false;
-    if ((activeRoom.scopeMode ?? "full") !== "full") return false;
-    return detectMainScriptUpdate(activeRoom.script, nodes, Date.now());
+    if (roomScope(activeRoom.scopeMode) !== "full") return false;
+    return detectMainScriptUpdate(activeRoom.script, nodes);
   }, [activeRoom, nodes]);
 
   // ------------------------------------------------------------
@@ -315,7 +303,9 @@ export function TheaterPage() {
       const prev = writeChains.current.get(roomId) ?? Promise.resolve();
       const next = prev.then(fn, fn); // 前一个失败不拦后续
       writeChains.current.set(roomId, next);
-      void next.finally(() => {
+      // 清理派生链先吞掉 next 的失败再删表项：直接 next.finally(...) 会在 fn 抛错时
+      // 留下一条没人 catch 的 rejection（浏览器控制台必报 Unhandled promise rejection）
+      void next.catch(() => undefined).finally(() => {
         if (writeChains.current.get(roomId) === next) writeChains.current.delete(roomId);
       });
       return next;
@@ -326,13 +316,14 @@ export function TheaterPage() {
   const saveRoom = useCallback(
     async (patch: Partial<RPSession>): Promise<RPSession | null> => {
       if (!activeRoom) return null;
+      if (roomLocked) return null; // 双开只读：拿不到锁的页签禁止一切写（含配置/节拍/重命名）
       const id = activeRoom.id;
       // v3.1-⑥ 事务内读-改-写：场记/自动保存并发写同一房间不互相覆盖
       const saved = await queueRoomWrite(id, () => repos.updateSession(id, (cur) => ({ ...cur, ...patch })));
       if (saved) setRooms((prev) => roomSort(prev.map((r) => (r.id === saved.id ? saved : r))));
       return saved ?? null;
     },
-    [activeRoom, queueRoomWrite],
+    [activeRoom, roomLocked, queueRoomWrite],
   );
 
   /** turns→messages：按稳定 id 对齐旧行（截断/删除/并发不错位）；旧数据无 id 时退化为位次对齐 */
@@ -408,8 +399,9 @@ export function TheaterPage() {
       }
       // 本地写盘：全量快照覆盖（去抖在 writer 内部）
       if (saved) writerRef.current?.queue(roomFileName(saved.name ?? "", saved.id), exportJsonl(saved, assembly?.setup.charName ?? "角色"));
-      // 楼层定时 → 场记自动整理（跑在注册表里，切页不中断；活动流里见）
-      if (due && saved && (saved.config?.agentEnabled ?? true)) void organize("auto");
+      // 楼层定时 → 场记自动整理（跑在注册表里，切页不中断；活动流里见）；
+      // 显式传本房间 id 与幕名：写链等待期间切了房间也不能把场记打到别的房间
+      if (due && saved && (saved.config?.agentEnabled ?? true)) void organize("auto", id, assembly?.sceneTitle);
       if (saved) setRooms((prev) => roomSort(prev.map((r) => (r.id === saved.id ? saved : r))));
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -436,8 +428,8 @@ export function TheaterPage() {
   );
 
   // ------------------------------------------------------------
-  // 场记（v3.1-①）：整理跑在模块注册表里（flow/agentrun），切页/卸载都不中断；
-  // 每个工具调用即时落库，本页只是订阅视图。
+  // 场记（v3.1-①）：整理跑在模块注册表里，切页/卸载都不中断；本页只是订阅视图。
+  // io 全部现读现写（不捕获渲染态），每个工具调用即时落库。
   // ------------------------------------------------------------
   const applyCanon = async (items: DigestLedgerItem[]) => {
     if (!activeRoom || items.length === 0) return;
@@ -458,7 +450,6 @@ export function TheaterPage() {
   };
 
   // ------------------------------------------------------------
-  // 场记（v3.1-①）：整理跑在模块注册表里，切页/卸载都不中断；本页只是订阅视图。
   // io 全部现读现写（不捕获渲染态），每个工具调用即时落库。
   // ------------------------------------------------------------
   const activeRoomIdRef = useRef("");
@@ -525,10 +516,12 @@ export function TheaterPage() {
   );
 
   const organize = useCallback(
-    (mode: "manual" | "auto") => {
-      const roomId = activeRoomIdRef.current;
-      if (!roomId) return Promise.resolve();
-      return startOrganize({ roomId, io: organizeIO, sceneTitle: sceneTitleRef.current || "（未知场景）", mode });
+    (mode: "manual" | "auto", roomId?: string, sceneTitle?: string) => {
+      // roomId/sceneTitle 显传（auto 来自 persist：写链等待期间用户可能已切房，
+      // 若都读 ref，场记会打在错误的房间上）；手动按钮不传，落当前房间。
+      const rid = roomId ?? activeRoomIdRef.current;
+      if (!rid) return Promise.resolve();
+      return startOrganize({ roomId: rid, io: organizeIO, sceneTitle: sceneTitle ?? (sceneTitleRef.current || "（未知场景）"), mode });
     },
     [organizeIO],
   );
@@ -553,7 +546,6 @@ export function TheaterPage() {
       const room = newRoom({
         id: repos.uid(),
         projectId: pid,
-        projectName: proj?.title ?? "",
         name: nf.name.trim() || `${proj?.title ?? "作品"} · 房间${rooms.filter((r) => r.projectId === pid).length + 1}`,
         userName: personaName(nf.personaId || personas.find((p) => p.isDefault)?.id || ""),
         pace: nf.pace,
@@ -573,7 +565,7 @@ export function TheaterPage() {
       setRooms((prev) => roomSort([saved, ...prev]));
       setActiveId(saved.id);
       setCreating(false);
-      prefsRef.current = { ...prefsRef.current, lastProjectId: pid, lastCharId: nf.charId, lastPersonaId: room.config?.personaId ?? "", pace: nf.pace, scopeMode: nf.scopeMode, ledgerCadence: room.config!.ledgerCadence, borrowProjectLedger: nf.borrowProjectLedger };
+      prefsRef.current = { ...prefsRef.current, lastProjectId: pid, pace: nf.pace, ledgerCadence: room.config!.ledgerCadence, borrowProjectLedger: nf.borrowProjectLedger };
       savePrefs(prefsRef.current);
       setNote(`房间「${saved.name}」已开：正典空白，副本已拍（${snap.scenes.length} 幕）。${nf.sandbox ? "沙盒房没有剧本约束。" : ""}`);
     } catch (e) {
@@ -585,7 +577,9 @@ export function TheaterPage() {
     if (!window.confirm(`删除房间「${room.name ?? room.id}」？其对话与房间正典（${room.id.slice(0, 6)}…绑定台账）一并删除，不可撤销。`)) return;
     // M5 留底：先自动导出一份 jsonl 落盘（磁盘旧快照不会被删，双保险）
     try {
-      downloadText(roomFileName(room.name ?? "", room.id), exportJsonl(room, assembly?.setup.charName ?? "角色"));
+      // 角色名按**本房间**推导（旧版误用当前活动房间的装配名）
+      const charName = room.id === activeRoom?.id ? assembly?.setup.charName ?? "角色" : room.config?.charId ? "角色" : "旁白";
+      downloadText(roomFileName(room.name ?? "", room.id), exportJsonl(room, charName));
     } catch {
       /* 留底失败不拦删除 */
     }
@@ -603,6 +597,7 @@ export function TheaterPage() {
 
   /** 列表上不依赖 activeRoom 的直改（重命名/标记等）：走链 + 事务读-改-写，不碰在飞的消息 */
   const saveRoomDirect = async (room: RPSession, patch: Partial<RPSession>) => {
+    if (roomLocked && room.id === activeRoom?.id) return; // 双开只读同样拦住活动房间的直接改动
     const saved = await queueRoomWrite(room.id, () => repos.updateSession(room.id, (cur) => ({ ...cur, ...patch })));
     if (saved) setRooms((prev) => roomSort(prev.map((r) => (r.id === saved.id ? saved : r))));
   };
@@ -610,12 +605,13 @@ export function TheaterPage() {
   const syncSnapshot = async () => {
     if (!activeRoom || !project) return;
     const scenes =
-      (activeRoom.scopeMode ?? "full") === "chapters" && activeRoom.config?.chapterIds?.length
+      roomScope(activeRoom.scopeMode) === "chapters" && activeRoom.config?.chapterIds?.length
         ? scenesOfChapters(nodes, activeRoom.config.chapterIds)
         : sceneSequence(nodes);
     const snap = buildScriptSnapshot(project.title, nodes, scenes, Date.now());
-    await saveRoom({ script: snap, progress: mergeProgressOnSync(snap, activeRoom.progress) });
-    setNote(`副本已同步主纲（${snap.scenes.length} 幕）；已演标记按节拍 id 保留 ${Object.keys(mergeProgressOnSync(snap, activeRoom.progress)).length} 个。`);
+    const merged = mergeProgressOnSync(snap, activeRoom.progress);
+    await saveRoom({ script: snap, progress: merged });
+    setNote(`副本已同步主纲（${snap.scenes.length} 幕）；已演标记按节拍 id 保留 ${Object.keys(merged).length} 个。`);
   };
 
   // 手动标记副本节拍（用户的手 = 合法；agent 的 mark_beat 走同一 progress）
@@ -638,9 +634,25 @@ export function TheaterPage() {
     setProjectCanon(pc);
   }, []);
 
+  /** 配置补丁统一入口：事务内与库内最新 config 合并。
+   *  （旧写法在渲染层展开 activeRoom.config 再整块写回——场记并发写的
+   *  cadenceMark 等字段会被陈旧渲染态静默回滚。） */
+  const patchConfig = useCallback(
+    (patch: Partial<NonNullable<RPSession["config"]>>, extra?: Partial<RPSession>): Promise<RPSession | null> => {
+      if (!activeRoom || roomLocked) return Promise.resolve(null);
+      const id = activeRoom.id;
+      return queueRoomWrite(id, () =>
+        repos.updateSession(id, (cur) => (cur.config ? { ...cur, ...extra, config: { ...cur.config, ...patch } } : cur)),
+      ).then((saved) => {
+        if (saved) setRooms((prev) => roomSort(prev.map((r) => (r.id === saved.id ? saved : r))));
+        return saved ?? null;
+      });
+    },
+    [activeRoom, roomLocked, queueRoomWrite],
+  );
+
   const setConfig = (patch: Partial<NonNullable<RPSession["config"]>>) => {
-    if (!activeRoom?.config) return;
-    void saveRoom({ config: { ...activeRoom.config, ...patch } });
+    void patchConfig(patch);
   };
 
   // ------------------------------------------------------------
@@ -706,7 +718,6 @@ export function TheaterPage() {
         const room = newRoom({
           id: repos.uid(),
           projectId: th.projectId,
-          projectName: proj?.title ?? "",
           name: `${proj?.title ?? "作品"} · ${src ? "续写" : "全本"} ${new Date().toLocaleDateString()}`,
           userName: personaName(personas.find((p) => p.isDefault)?.id ?? ""),
           pace: prefsRef.current.pace,
@@ -959,10 +970,7 @@ export function TheaterPage() {
                     disabled={roomLocked}
                     onChange={(e) => {
                       const pid = e.target.value;
-                      void saveRoom({
-                        config: { ...activeRoom.config!, personaId: pid },
-                        userName: personaName(pid),
-                      });
+                      void patchConfig({ personaId: pid }, { userName: personaName(pid) });
                     }}
                   >
                     <option value="">画像 · 不设（用户名=读者）</option>
@@ -974,7 +982,7 @@ export function TheaterPage() {
                   </select>
                 </label>
                 <label>楼层定时
-                  <input style={{ width: 46 }} value={String(activeRoom.config.ledgerCadence)} onChange={(e) => setConfig({ ledgerCadence: Math.max(0, Math.floor(Number(e.target.value) || 0)) })} /> 楼
+                  <input style={{ width: 46 }} value={String(activeRoom.config.ledgerCadence)} readOnly={roomLocked} onChange={(e) => setConfig({ ledgerCadence: Math.max(0, Math.floor(Number(e.target.value) || 0)) })} /> 楼
                 </label>
                 <span style={{ color: "var(--muted)" }}>正典 {roomCanon.length} 条{activeRoom.config.borrowProjectLedger ? `（另借 ${projectCanon.length}）` : ""}</span>
               </div>
@@ -985,7 +993,7 @@ export function TheaterPage() {
               <div style={{ flex: "2 1 480px", minWidth: 340 }}>
                 {runnerSetup && (
                   <RpRunner
-                    key={`${activeRoom.id}:${rpMountKey}`}
+                    key={activeRoom.id}
                     setup={runnerSetup}
                     charName={assembly.setup.charName}
                     userName={persona?.name?.trim() || activeRoom.userName || "读者"}
@@ -1010,7 +1018,8 @@ export function TheaterPage() {
                     disabled={roomLocked}
                     onPersist={(turns, summary, allowClear, allowFold) => void persist(turns, summary, allowClear, allowFold)}
                     onAutosave={(turns, summary) => void autosave(turns, summary)}
-                    onBudgetChange={(b, r) => void saveRoom({ config: { ...activeRoom.config!, budgetTokens: b, reserveTokens: r } }).then(() => {
+                    onBudgetChange={(b, r) => void patchConfig({ budgetTokens: b, reserveTokens: r }).then((saved) => {
+                      if (!saved) return;
                       prefsRef.current = { ...prefsRef.current, budgetTokens: b, reserveTokens: r };
                       savePrefs(prefsRef.current);
                     })}

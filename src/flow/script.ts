@@ -42,15 +42,14 @@ export function buildScriptSnapshot(
   };
 }
 
-/** 副本生成后主纲是否又变了（full 模式同步提示的依据；按幕节点 updatedAt 比对） */
-export function detectMainScriptUpdate(snapshot: ScriptSnapshot, nodes: OutlineNode[], nowAt: number): boolean {
+/** 副本生成后主纲是否又变了（full 模式同步提示的依据：比对幕节点 updatedAt 与快照时点） */
+export function detectMainScriptUpdate(snapshot: ScriptSnapshot, nodes: OutlineNode[]): boolean {
   if (!snapshot.scenes.length) return false;
   const byId = new Map(nodes.map((n) => [n.id, n] as const));
   for (const sc of snapshot.scenes) {
     const live = sc.nodeId ? byId.get(sc.nodeId) : undefined;
     if (live && live.updatedAt > snapshot.nodesUpdatedAt) return true;
   }
-  void nowAt;
   return false;
 }
 

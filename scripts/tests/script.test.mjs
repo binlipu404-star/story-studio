@@ -41,12 +41,12 @@ export default async function (t) {
   // 2. 主纲变化检测
   {
     const snap = buildScriptSnapshot("T", [volume(), chapter(), scene()], [scene()], 100);
-    t.eq(detectMainScriptUpdate(snap, [volume(), chapter(), scene()], 200), false, "2. 未变 → false");
+    t.eq(detectMainScriptUpdate(snap, [volume(), chapter(), scene()]), false, "2. 未变 → false");
     const moved = scene({ updatedAt: 500 });
-    t.eq(detectMainScriptUpdate(snap, [volume(), chapter(), moved], 200), true, "2. 幕被改 → true");
-    t.eq(detectMainScriptUpdate(snap, [volume(), chapter()], 200), false, "2. 幕被删 → false（不是变化信号）");
+    t.eq(detectMainScriptUpdate(snap, [volume(), chapter(), moved]), true, "2. 幕被改 → true");
+    t.eq(detectMainScriptUpdate(snap, [volume(), chapter()]), false, "2. 幕被删 → false（不是变化信号）");
     const sandbox = buildScriptSnapshot("T", [], [], 100);
-    t.eq(detectMainScriptUpdate(sandbox, [scene()], 200), false, "2. 沙盒房永不提示");
+    t.eq(detectMainScriptUpdate(sandbox, [scene()]), false, "2. 沙盒房永不提示");
   }
 
   // 3. 同步时标记合并：孤儿标记清理、有效标记保留

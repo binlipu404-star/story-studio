@@ -23,6 +23,7 @@ import type { Persona } from "../core/types";
 import { personaPromptBlock } from "../ai/prompts";
 import { importPersonaBytes } from "../st/persona";
 import * as repos from "../store/repos";
+import { errMsg, formatTime } from "../core/uiUtils";
 import { loadProgress, saveProgress } from "../flow/progress";
 
 // ---------- 小工具 ----------
@@ -57,14 +58,6 @@ const ELLIPSIS_STYLE: CSSProperties = {
   textOverflow: "ellipsis",
   whiteSpace: "nowrap",
 };
-
-function errMsg(err: unknown): string {
-  return err instanceof Error ? err.message : String(err);
-}
-
-function formatTime(ts: number): string {
-  return new Date(ts).toLocaleString();
-}
 
 /** 描述摘要：压平空白后取前 n 字 */
 function summarize(text: string, n = 40): string {

@@ -8,7 +8,7 @@ import type { OutlineNode, OutlineLevel, OutlineStatus, Beat, ID } from "../core
 export const LEVEL_ORDER: OutlineLevel[] = ["volume", "chapter", "scene", "beat"];
 export const LEVEL_NAMES: Record<OutlineLevel, string> = { volume: "卷", chapter: "章", scene: "幕", beat: "拍" };
 
-const STATUS_NAMES: Record<OutlineStatus, string> = {
+export const STATUS_NAMES: Record<OutlineStatus, string> = {
   idea: "灵感",
   draft: "草案",
   refined: "细化",

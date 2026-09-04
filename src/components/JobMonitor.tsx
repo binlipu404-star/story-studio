@@ -95,7 +95,7 @@ export function JobMonitor() {
     return () => clearInterval(t);
   }, [running, open]);
 
-  if (jobs.length === 0 && running === 0) return null;
+  if (jobs.length === 0) return null; // running 是 jobs 子集，length=0 时 running 必为 0
 
   const badge = running > 0 ? ` · ${running} 进行中` : "";
   return (

@@ -107,14 +107,13 @@ export function clearAllProgress(): number {
 }
 
 /** 防抖器（纯逻辑可测）：delay 内多次触发只落最后一次 */
-export function makeDebouncer(ms: number, fire: () => void, now: () => number = () => Date.now()): {
+export function makeDebouncer(ms: number, fire: () => void): {
   bump: () => void;
   flushNow: () => void;
   cancel: () => void;
   pending: () => boolean;
 } {
   let timer: ReturnType<typeof setTimeout> | null = null;
-  void now;
   return {
     bump: () => {
       if (timer) clearTimeout(timer);

@@ -46,7 +46,6 @@ const project = {
   lorebook: { scanDepth: 2, tokenBudget: 2048, recursiveScanning: true },
   createdAt: 0,
   updatedAt: 0,
-  schema: 1,
 };
 
 const node = {
@@ -59,7 +58,7 @@ const node = {
 const character = {
   id: "c1", projectId: "p1", name: "薇薇安",
   profile: { appearance: "银发", background: "守灯人", personality: "冷峻", speechStyle: "", exampleLines: [] },
-  scenario: "灯塔", greeting: "", mesExample: "", state: "", source: "manual", cardFormat: "v2", rawCard: undefined,
+  scenario: "灯塔", greeting: "", mesExample: "", source: "manual", cardFormat: "v2", rawCard: undefined,
   createdAt: 0, updatedAt: 0,
 };
 

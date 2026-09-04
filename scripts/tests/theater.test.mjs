@@ -18,12 +18,12 @@ const snap = buildScriptSnapshot("灯塔", nodes, [nodes[2], nodes[3]], 100);
 
 const project = {
   id: "p1", title: "灯塔", synopsis: "", bible: { fields: [{ key: "w", label: "世界观", group: "世界", value: "永夜之海", status: "confirmed" }], revisions: [] },
-  lorebook: { scanDepth: 2, tokenBudget: 2048, recursiveScanning: true }, createdAt: 0, updatedAt: 0, schema: 1,
+  lorebook: { scanDepth: 2, tokenBudget: 2048, recursiveScanning: true }, createdAt: 0, updatedAt: 0,
 };
 const char = {
   id: "ch1", projectId: "p1", name: "薇薇安",
   profile: { appearance: "银发", personality: "冷峻", background: "守灯人", speechStyle: "", exampleLines: [] },
-  scenario: "灯塔", greeting: "", mesExample: "", state: "", source: "manual", cardFormat: "v2", createdAt: 0, updatedAt: 0,
+  scenario: "灯塔", greeting: "", mesExample: "", source: "manual", cardFormat: "v2", createdAt: 0, updatedAt: 0,
 };
 const lore = {
   id: "l1", projectId: "p1", uid: 1, comment: "灯塔", content: "建于1899年。", keys: ["灯塔"], secondaryKeys: [],
@@ -94,7 +94,7 @@ export default async function (t) {
   // 6. newRoom 形状与排序
   {
     const r = newRoom({
-      id: "r9", projectId: "p1", projectName: "灯塔", name: "新房间", userName: "U", pace: "tight",
+      id: "r9", projectId: "p1", name: "新房间", userName: "U", pace: "tight",
       scopeMode: "chapters", sandbox: false, script: snap, charId: "ch1", personaId: "", budgetTokens: 4096,
       reserveTokens: 512, ledgerCadence: 10, borrowProjectLedger: false, chapterIds: ["c1"], now: 555,
     });

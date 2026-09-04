@@ -36,6 +36,7 @@ import {
 } from "../st/lorebook";
 import { estimateTokens } from "../ai/tokenizer";
 import * as repos from "../store/repos";
+import { downloadJson, errMsg } from "../core/uiUtils";
 import { db } from "../store/db";
 import { loadProgress, saveProgress } from "../flow/progress";
 
@@ -51,23 +52,6 @@ const BADGE_STYLE: CSSProperties = {
   color: "var(--muted)",
   whiteSpace: "nowrap",
 };
-
-/** 统一 Blob 下载小工具：createObjectURL → a.click → revoke */
-function downloadJson(fileName: string, data: unknown): void {
-  const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement("a");
-  a.href = url;
-  a.download = fileName;
-  document.body.appendChild(a);
-  a.click();
-  a.remove();
-  URL.revokeObjectURL(url);
-}
-
-function errMsg(err: unknown): string {
-  return err instanceof Error ? err.message : String(err);
-}
 
 /** 逗号分隔文本 → 触发词数组（半角/全角逗号均可；trim + 去空） */
 function parseKeys(text: string): string[] {
@@ -249,9 +233,13 @@ export function LorePage({ projectId }: { projectId: string }) {
       tokenBudget: Number.isFinite(tb) && tb >= 0 ? tb : 0,
       recursiveScanning: params.recursiveScanning,
     };
-    const updated = await repos.updateProject(projectId, { lorebook });
-    if (updated) setProject(updated);
-    setFlash("世界书参数已保存");
+    try {
+      const updated = await repos.updateProject(projectId, { lorebook });
+      if (updated) setProject(updated);
+      setFlash("世界书参数已保存");
+    } catch (err) {
+      setBulkError(`保存参数失败：${errMsg(err)}`);
+    }
   };
 
   // ---------- 词条 CRUD ----------
@@ -268,19 +256,23 @@ export function LorePage({ projectId }: { projectId: string }) {
 
   const saveDraft = async () => {
     if (!editingId || !draft) return;
-    await repos.updateLoreEntry(editingId, {
-      keys: parseKeys(draft.keysText),
-      secondaryKeys: parseKeys(draft.secondaryKeysText),
-      content: draft.content,
-      order: draft.order,
-      selective: draft.selective,
-      caseSensitive: draft.caseSensitive,
-      matchWholeWord: draft.matchWholeWord,
-      constant: draft.constant,
-      enabled: draft.enabled,
-    });
-    await refresh();
-    setFlash("词条已保存");
+    try {
+      await repos.updateLoreEntry(editingId, {
+        keys: parseKeys(draft.keysText),
+        secondaryKeys: parseKeys(draft.secondaryKeysText),
+        content: draft.content,
+        order: draft.order,
+        selective: draft.selective,
+        caseSensitive: draft.caseSensitive,
+        matchWholeWord: draft.matchWholeWord,
+        constant: draft.constant,
+        enabled: draft.enabled,
+      });
+      await refresh();
+      setFlash("词条已保存");
+    } catch (err) {
+      setBulkError(`保存词条失败：${errMsg(err)}`);
+    }
   };
 
   /** 与相邻行交换 order；order 相同（导入并列常见）时给移动方 ±1 制造先后 */
@@ -289,33 +281,46 @@ export function LorePage({ projectId }: { projectId: string }) {
     if (target < 0 || target >= entries.length) return;
     const a = entries[index];
     const b = entries[target];
-    if (a.order !== b.order) {
-      await repos.updateLoreEntry(a.id, { order: b.order });
-      await repos.updateLoreEntry(b.id, { order: a.order });
-    } else {
-      await repos.updateLoreEntry(a.id, { order: a.order + dir });
+    try {
+      // 两写非原子：失败提示重试（半途只改了一条 order，刷新后可再点一次修回）
+      if (a.order !== b.order) {
+        await repos.updateLoreEntry(a.id, { order: b.order });
+        await repos.updateLoreEntry(b.id, { order: a.order });
+      } else {
+        await repos.updateLoreEntry(a.id, { order: a.order + dir });
+      }
+      setEditingId(null);
+      setDraft(null);
+      await refresh();
+    } catch (err) {
+      setBulkError(`移动词条失败（顺序可能只改了一半，重试可修回）：${errMsg(err)}`);
     }
-    setEditingId(null);
-    setDraft(null);
-    await refresh();
   };
 
   const addEntry = async () => {
-    const e = await repos.addLoreEntry(projectId);
-    await refresh();
-    setEditingId(e.id);
-    setDraft(draftFromEntry(e));
-    setFlash("已新增空词条，直接编辑后保存");
+    try {
+      const e = await repos.addLoreEntry(projectId);
+      await refresh();
+      setEditingId(e.id);
+      setDraft(draftFromEntry(e));
+      setFlash("已新增空词条，直接编辑后保存");
+    } catch (err) {
+      setBulkError(`新增词条失败：${errMsg(err)}`);
+    }
   };
 
   const removeEntry = async (e: LoreEntry) => {
     if (!window.confirm(`删除词条「${entryLabel(e)}」？此操作不可恢复。`)) return;
-    await repos.removeLoreEntry(e.id);
-    if (editingId === e.id) {
-      setEditingId(null);
-      setDraft(null);
+    try {
+      await repos.removeLoreEntry(e.id);
+      if (editingId === e.id) {
+        setEditingId(null);
+        setDraft(null);
+      }
+      await refresh();
+    } catch (err) {
+      setBulkError(`删除词条失败：${errMsg(err)}`);
     }
-    await refresh();
   };
 
   // ---------- 整本批量操作（直接走 db 门面，Dexie 集合原语一次事务，避免逐条写） ----------
@@ -344,7 +349,13 @@ export function LorePage({ projectId }: { projectId: string }) {
   /** 删除整本：confirm 前先数好条数，delete() 一次清空本项目全部词条 */
   const removeAllEntries = async () => {
     setBulkError(null);
-    const total = await db.loreEntries.where("projectId").equals(projectId).count();
+    let total = 0;
+    try {
+      total = await db.loreEntries.where("projectId").equals(projectId).count();
+    } catch (err) {
+      setBulkError(`统计词条数失败：${errMsg(err)}`);
+      return;
+    }
     if (total === 0) {
       await refresh();
       return;
