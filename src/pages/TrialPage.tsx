@@ -30,6 +30,7 @@ import {
 } from "../flow/outline";
 import { buildTrialPack, synthesizeNarratorCard, type TrialPack } from "../flow/trialpack";
 import type { RpSetup, RpTurn } from "../flow/rp";
+import { ledgerFacts } from "../flow/snapshot";
 import { RpRunner } from "../components/RpRunner";
 import { exportCardV2 } from "../st/card";
 import { exportLorebookGlobal } from "../st/lorebook";
@@ -115,6 +116,11 @@ export function TrialPage({ projectId }: { projectId: string }) {
   const [loreEntries, setLoreEntries] = useState<LoreEntry[]>([]);
   const [sessions, setSessions] = useState<RPSession[]>([]);
   const [personas, setPersonas] = useState<Persona[]>([]);
+  /** 已确认台账（正典事实）：站内 RP 的组装管线注入快照+伏笔欠账 */
+  const [ledgerRecs, setLedgerRecs] = useState<LedgerRecord[]>([]);
+  /** 站内 RP 的工作会话：每幕一条 testing，随聊天自动落库（刷新可续写） */
+  const [rpSession, setRpSession] = useState<RPSession | null>(null);
+  const rpSessionRef = useRef<RPSession | null>(null);
   const [loaded, setLoaded] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
 
@@ -150,13 +156,14 @@ export function TrialPage({ projectId }: { projectId: string }) {
 
   const refresh = useCallback(async () => {
     try {
-      const [proj, nd, ch, lore, ss, ps] = await Promise.all([
+      const [proj, nd, ch, lore, ss, ps, led] = await Promise.all([
         repos.getProject(projectId),
         repos.listNodes(projectId),
         repos.listCharacters(projectId),
         repos.listLoreEntries(projectId),
         repos.listSessions(projectId),
         repos.listPersonas(),
+        repos.listLedger(projectId, "confirmed"),
       ]);
       setProject(proj);
       setNodes(nd);
@@ -164,6 +171,7 @@ export function TrialPage({ projectId }: { projectId: string }) {
       setLoreEntries(lore);
       setSessions(ss);
       setPersonas(ps);
+      setLedgerRecs(led);
       // 载入后一次性：有默认画像且当前未选 → 套用（此后不再覆盖用户的选择，含手选的「不设画像」）
       if (!personaDefaultApplied.current) {
         personaDefaultApplied.current = true;
@@ -215,6 +223,8 @@ export function TrialPage({ projectId }: { projectId: string }) {
     setBeatMsg(null);
     setReweaveText("");
     setProposalMsg(null);
+    setRpSession(null);
+    rpSessionRef.current = null;
   };
 
   const selectScene = (id: string) => {
@@ -308,7 +318,15 @@ export function TrialPage({ projectId }: { projectId: string }) {
           loreSettings: project?.lorebook ?? { scanDepth: 2, tokenBudget: 2048, recursiveScanning: true },
         };
       }
-      setRpSetup(rp);
+      setRpSetup({
+        ...rp,
+        ledgerBlock: ledgerFacts(ledgerRecs, nodes) || undefined,
+      });
+      // 本幕已有 testing 会话 → 挂回工作会话（RpRunner 恢复旧对话续写）
+      const prior =
+        sessions.find((s) => (s.nodeId ?? null) === scene.id && s.status === "testing" && s.messages.length > 0) ?? null;
+      rpSessionRef.current = prior;
+      setRpSession(prior);
       setPackLeadLabel(
         `${leadChar ? `主演：${leadChar.name || "（无名）"}` : "主演：旁白卡（无卡模式）"}` +
           `｜玩家画像：${persona ? persona.name || "（未命名）" : "（未设）"}`,
@@ -361,6 +379,71 @@ export function TrialPage({ projectId }: { projectId: string }) {
     void runRecap(scene, msgs);
   };
 
+  /** 站内 RP 稳定落定 → 自动落库本幕工作会话（testing；刷新/换页后可续写） */
+  const onRpPersist = async (rturns: RpTurn[], sum: string) => {
+    if (!scene) return;
+    try {
+      const base = rpSessionRef.current;
+      const now = Date.now();
+      const createdAt = base?.createdAt ?? now;
+      const messages: RPMessage[] = rturns.map((t, i) => ({
+        id: base?.messages[i]?.id ?? `${createdAt}-${i}`,
+        role: t.role,
+        name: t.name,
+        content: t.content,
+        createdAt: createdAt + i,
+      }));
+      const cast = [...scene.cast];
+      if (leadChar && !cast.includes(leadChar.id)) cast.push(leadChar.id);
+      const row: RPSession = {
+        id: base?.id ?? repos.uid(),
+        projectId,
+        nodeId: scene.id,
+        cast,
+        userName: rpSetup?.userName ?? persona?.name?.trim() ?? loadAppConfig().userName,
+        messages,
+        ...(sum ? { rollingSummary: sum } : {}),
+        status: base?.status === "canon" ? "canon" : "testing",
+        createdAt,
+        updatedAt: now,
+      };
+      const saved = await repos.saveSession(row);
+      rpSessionRef.current = saved;
+      setRpSession(saved);
+      setSessions((prev) => [saved, ...prev.filter((s) => s.id !== saved.id)]);
+    } catch {
+      // 静默：持久化失败不打断聊天（本回合仍在屏上）
+    }
+  };
+
+  /** 本幕全部落库会话（listSessions 已按 updatedAt 倒序） */
+  const sceneSessions = useMemo(() => (scene ? sessions.filter((s) => (s.nodeId ?? null) === scene.id) : []), [sessions, scene]);
+
+  const markSessionStatus = async (s: RPSession, status: "canon" | "testing" | "abandoned") => {
+    try {
+      const saved = await repos.saveSession({ ...s, status });
+      setSessions((prev) => [saved, ...prev.filter((x) => x.id !== saved.id)]);
+      if (rpSessionRef.current?.id === s.id) {
+        rpSessionRef.current = saved;
+        setRpSession(saved);
+      }
+    } catch (e) {
+      setImportError(`更新会话状态失败：${errMsg(e)}`);
+    }
+  };
+
+  /** RpRunner 重挂载令牌：只在显式「续写」/换场时递增（自动落库不打断聊天） */
+  const [rpMountKey, setRpMountKey] = useState(0);
+
+  /** 传给 RpRunner 的恢复态（仅当本幕有已落库对话时） */
+  const rpInitial =
+    rpSession && rpSession.messages.length > 0
+      ? {
+          turns: rpSession.messages.map((m) => ({ role: m.role, name: m.name, content: m.content })),
+          summary: rpSession.rollingSummary ?? "",
+        }
+      : null;
+
   // ---------- 步骤3：导入试跑记录 → AI 复盘 ----------
 
   const onChatFile = async (e: ChangeEvent<HTMLInputElement>) => {
@@ -412,7 +495,7 @@ export function TrialPage({ projectId }: { projectId: string }) {
       const cast = [...scene.cast];
       if (leadChar && !cast.includes(leadChar.id)) cast.push(leadChar.id);
       const session: RPSession = {
-        id: repos.uid(),
+        id: rpSessionRef.current?.id ?? repos.uid(), // 站内聊过 → 复盘保存更新同一条工作会话
         projectId,
         nodeId: scene.id,
         cast,
@@ -425,6 +508,8 @@ export function TrialPage({ projectId }: { projectId: string }) {
       };
       const saved = await repos.saveSession(session);
       setSavedSession(saved);
+      rpSessionRef.current = saved;
+      setRpSession(saved);
       setSessions((prev) => [saved, ...prev.filter((s) => s.id !== saved.id)]);
     } catch (e) {
       setImportError(`保存会话失败：${errMsg(e)}`);
@@ -633,13 +718,93 @@ export function TrialPage({ projectId }: { projectId: string }) {
         <section className="panel">
           <h3>② 站内试跑（推荐：不必导出 ST，直接开聊）</h3>
           <RpRunner
+            key={`${scene?.id ?? "x"}-${rpMountKey}`}
             setup={rpSetup}
             charName={rpSetup.charName}
             userName={rpSetup.userName}
             sceneLabel={pack.folder}
             greeting={pack.greeting}
+            initial={rpInitial}
+            onPersist={(t, s) => void onRpPersist(t, s)}
             onBringBack={onBringBackFromRp}
           />
+        </section>
+      )}
+
+      {/* ---------- 本幕会话管理（N2：持久化/回放/状态） ---------- */}
+      {scene && (
+        <section className="panel">
+          <h3>本幕会话（{sceneSessions.length}）</h3>
+          <p className="muted" style={{ fontSize: 12 }}>
+            站内试跑每稳定落定一条就自动落库为本幕工作会话（status=testing），刷新/换页后可「续写」。
+            复盘保存会更新同一条。标记「正典」后不再被默认续写选中。
+          </p>
+          {sceneSessions.length === 0 && <p className="muted">尚无落库会话。</p>}
+          {sceneSessions.map((s) => (
+            <div key={s.id} style={{ borderTop: "1px solid var(--line)", padding: "6px 0" }}>
+              <div className="row" style={{ gap: 8, flexWrap: "wrap" }}>
+                <span
+                  style={{
+                    fontSize: 12,
+                    padding: "1px 8px",
+                    borderRadius: 10,
+                    border: "1px solid var(--line)",
+                    background: s.status === "canon" ? "#1b5e20" : s.status === "abandoned" ? "#616161" : "var(--panel)",
+                    color: s.status === "testing" ? undefined : "#fff",
+                  }}
+                >
+                  {s.status === "canon" ? "正典" : s.status === "abandoned" ? "弃稿" : "试跑中"}
+                </span>
+                <span className="muted" style={{ fontSize: 12 }}>
+                  {s.messages.length} 条 · 更新 {new Date(s.updatedAt).toLocaleString()}
+                  {s.rollingSummary ? ` · 前情摘要 ${s.rollingSummary.length} 字` : ""}
+                  {rpSession?.id === s.id ? " · 当前续写中" : ""}
+                </span>
+                <button
+                  onClick={() => {
+                    rpSessionRef.current = s;
+                    setRpSession(s);
+                    setRpMountKey((k) => k + 1);
+                    if (!pack) setPackError("先「生成试跑包」，然后这里点「续写」即可接着聊。");
+                  }}
+                  disabled={rpSession?.id === s.id}
+                >
+                  续写
+                </button>
+                {s.status !== "canon" && (
+                  <button onClick={() => void markSessionStatus(s, "canon")} title="这一幕的演法被采纳为正典">
+                    标为正典
+                  </button>
+                )}
+                {s.status !== "testing" && (
+                  <button onClick={() => void markSessionStatus(s, "testing")}>改回试跑</button>
+                )}
+                {s.status !== "abandoned" && (
+                  <button onClick={() => void markSessionStatus(s, "abandoned")}>弃稿</button>
+                )}
+              </div>
+              <details style={{ marginTop: 4 }}>
+                <summary className="muted" style={{ fontSize: 12 }}>回放</summary>
+                <pre
+                  style={{
+                    whiteSpace: "pre-wrap",
+                    wordBreak: "break-word",
+                    background: "var(--bg)",
+                    padding: 8,
+                    borderRadius: 6,
+                    fontSize: 12,
+                    maxHeight: 260,
+                    overflowY: "auto",
+                    marginTop: 4,
+                  }}
+                >
+                  {s.rollingSummary ? `【前情摘要】${s.rollingSummary}\n\n` : ""}
+                  {s.messages.map((m) => `${m.name || m.role}：${m.content}`).join("\n\n").slice(0, 6000)}
+                  {s.messages.reduce((n, m) => n + m.content.length + 2, 0) > 6000 ? "\n…（回放截断 6000 字）" : ""}
+                </pre>
+              </details>
+            </div>
+          ))}
         </section>
       )}
 

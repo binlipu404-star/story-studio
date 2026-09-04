@@ -4,9 +4,14 @@
 // - 不使用任何 DOM / Node 专属 API（仅 ECMAScript 标准库）。
 // - 输入是内部规范化形态 LoreEntry / LorebookSettings（见 core/types.ts）。
 //
-// 本版明确不实现（无状态引擎无法跟踪激活历史，留待带状态的上层）：
-//   - sticky / cooldown：ST 需要跨轮次记录"词条于第几轮激活/熄灭"，
-//     本引擎每次调用互相独立，LoreEntry.sticky / cooldown 两字段本版不生效。
+// sticky / cooldown（N2 起支持，无状态引擎内的确定性重放）：
+//   对带 sticky 或 cooldown 的非 constant 词条，从历史前向重放一个状态机，
+//   推出"当前这一轮"是否应激活——见 timedActive。语义与 ST timed effects 对齐：
+//   关键词命中即激活并停留 sticky 轮；熄灭后进入 cooldown 轮冷却，冷却期内
+//   即便再次命中也不激活。sticky=0 且 cooldown=0 时逐位退化为本引擎原有行为，
+//   故对不带这两项的词条完全向后兼容。
+//
+// 本版仍不实现：
 //   - group 的随机加权抽取（ST 按权重随机选一条）：本版为确定性简化——
 //     同组只留 groupWeight 大者，tie 按 order 小者，再 tie 按 uid 小者。
 //   - groupOverride 字段本版不参与判定（group 规则统一为"非空 group → 同组留一"）。
@@ -120,6 +125,52 @@ function groupWins(a: LoreEntry, b: LoreEntry): boolean {
   return a.uid < b.uid;
 }
 
+// ---------- sticky / cooldown（确定性重放） ----------
+
+/** 是否定时词条（sticky/cooldown 任一 >0 才进重放判定） */
+function isTimed(entry: LoreEntry): boolean {
+  return (entry.sticky ?? 0) > 0 || (entry.cooldown ?? 0) > 0;
+}
+
+/**
+ * 对带 sticky/cooldown 的词条，从历史前向重放状态机，回答「当前这一轮」
+ * （= history 之后的下一次生成）是否应注入。轮 t=1..n（看 history[0..t-1]）：
+ *  - 冷却期内（t<=coolUntil）：不注入，且命中也不重新触发；
+ *  - 扫描窗命中：触发，激活至 t+sticky-1（sticky=0 → 仅本轮）；
+ *  - 否则若在 sticky 窗内：继续注入；
+ *  - 由活跃转不活跃的那一轮：cooldown>0 则起冷却 coolUntil=(t-1)+cooldown。
+ * sticky=0 且 cooldown=0 时逐位退化为「本轮扫描窗命中才注入」，与原行为全等。
+ */
+function timedActive(
+  entry: LoreEntry,
+  history: { name: string; content: string }[],
+  depth: number,
+): boolean {
+  const sticky = Math.max(0, Math.floor(entry.sticky ?? 0));
+  const cooldown = Math.max(0, Math.floor(entry.cooldown ?? 0));
+  let activeUntil = -1;
+  let coolUntil = -1;
+  let wasActive = false;
+  let active = false;
+  for (let t = 1; t <= history.length; t++) {
+    const ws = depth >= t ? 0 : t - depth;
+    const winText = history
+      .slice(ws, t)
+      .map((m) => m.content)
+      .join("\n");
+    const keyPresent = matchKeys(entry, winText, winText.toLowerCase()) !== null;
+    if (t <= coolUntil) active = false;
+    else if (keyPresent) {
+      active = true;
+      activeUntil = t + sticky - 1;
+    } else if (t <= activeUntil) active = true;
+    else active = false;
+    if (wasActive && !active && cooldown > 0) coolUntil = t - 1 + cooldown;
+    wasActive = active;
+  }
+  return active;
+}
+
 function byOrderThenUid(a: MatchedEntry, b: MatchedEntry): number {
   return a.entry.order - b.entry.order || a.entry.uid - b.entry.uid;
 }
@@ -160,6 +211,10 @@ export function matchLore(
     let via: MatchedEntry["via"];
     if (entry.constant) {
       via = "constant";
+    } else if (isTimed(entry)) {
+      // sticky/cooldown：以整段历史重放的定时状态机裁决（本窗口命中与否已含在内）
+      if (!timedActive(entry, history, depth)) continue;
+      via = "primary";
     } else {
       const keyVia = matchKeys(entry, scanText, scanLower);
       if (keyVia === null) continue;

@@ -270,6 +270,23 @@ export function nextScenePrompt(
   ];
 }
 
+// ---------- N2 滚动摘要（旧历史压缩；analyzer 角色用） ----------
+
+/** 旧摘要+新增情 → 一条新摘要（滚动链；JSON 单字段输出） */
+export function rollingSummaryPrompt(prevSummary: string, transcript: string): ChatMessage[] {
+  return [
+    {
+      role: "system",
+      content:
+        '你是角色扮演剧本的场记。把【旧摘要】与【新增情】合并成一条新摘要：保留人物关系变化、关键道具去向、地点与世界状态、未回收的悬念；只记事实不评论，不遗漏会影响后续剧情的细节。只输出 JSON：{"summary":"…"}（300 字以内）。',
+    },
+    {
+      role: "user",
+      content: [`【旧摘要】\n${prevSummary.trim() || "（无）"}`, `【新增情】\n${transcript}`].join("\n\n"),
+    },
+  ];
+}
+
 // ---------- M4 过渡试跑闭环（导出到 ST / 导回回写） ----------
 
 export interface TrialContext {

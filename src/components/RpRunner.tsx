@@ -1,15 +1,37 @@
 // ============================================================
-// 站内试跑 RP 面板（M5）——不导出 SillyTavern，直接在本机按 ST 默认标准开聊。
-// 展示层：只管回合状态机 + chat() 流式 + 世界书命中提示；提示词组装交给 flow/rp.ts。
-// 「带回复盘」把当前回合交给父层，复用既有 复盘 → 改纲/纠偏/采纳 全流程。
+// 站内试跑 RP 面板（M5 → N2 补全）。
+//   展示层：回合状态机 + chat() 流式 + 提示词组装交给 flow/rp.ts 管线 v2。
+//   N2 新增：优先级预算队列 + 分段 token 预览条；滚动摘要（自动/手动，analyzer）；
+//            swipe 多候选重生成（不覆盖旧候选）；任意回合编辑/删除；
+//            会话持久化回调（父层落 RPSession，刷新可续）。
+//   「带回复盘」把当前回合交给父层，复用既有 复盘 → 改纲/纠偏/采纳 全流程。
 // ============================================================
-import { useCallback, useEffect, useRef, useState } from "react";
-import { chat } from "../ai/client";
-import { rpMessages, type RpSetup, type RpTurn } from "../flow/rp";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { chat, chatJSON } from "../ai/client";
+import { rollingSummaryPrompt } from "../ai/prompts";
+import { planRollingSummary, rpAssemble, turnsTranscript, type RpTurn, type RpSetup } from "../flow/rp";
 
 function errMsg(e: unknown): string {
   return e instanceof Error ? e.message : String(e);
 }
+
+/** 超过 keepTurns 之外的旧历史达到该 token 数就自动折叠 */
+const ROLL_THRESHOLD = 2500;
+const ROLL_KEEP = 8;
+
+const SEC_COLORS: Record<string, string> = {
+  roleDirective: "#4caf50",
+  extra: "#2e7d32",
+  card: "#1565c0",
+  authorNote: "#6a1b9a",
+  summary: "#00838f",
+  ledger: "#8d6e63",
+  loreBefore: "#ef6c00",
+  loreAfter: "#aeea00",
+  persona: "#78909c",
+  examples: "#b0bec5",
+  history: "#546e7a",
+};
 
 export interface RpRunnerProps {
   setup: RpSetup;
@@ -20,32 +42,65 @@ export interface RpRunnerProps {
   /** 开场 assistant 消息（= 试跑包 greeting，已含本场指导） */
   greeting: string;
   disabled?: boolean;
+  /** 恢复既有会话（父层从 RPSession 还原；greeting 变化时生效一次） */
+  initial?: { turns: RpTurn[]; summary: string } | null;
+  /** 每次稳定落定（流式结束/编辑/滑动/折叠）后回调，父层负责落库 */
+  onPersist?: (turns: RpTurn[], summary: string) => void;
   /** 带这些对话去复盘 */
   onBringBack: (turns: RpTurn[]) => void;
 }
 
-export function RpRunner({ setup, charName, userName, sceneLabel, greeting, disabled, onBringBack }: RpRunnerProps) {
+export function RpRunner({ setup, charName, userName, sceneLabel, greeting, disabled, initial, onPersist, onBringBack }: RpRunnerProps) {
   const [turns, setTurns] = useState<RpTurn[]>([{ role: "char", name: charName, content: greeting }]);
+  const [summary, setSummary] = useState("");
   const [input, setInput] = useState("");
   const [running, setRunning] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [loreHits, setLoreHits] = useState<number | null>(null);
+  const [note, setNote] = useState<string | null>(null);
+  const [rollBusy, setRollBusy] = useState(false);
   const [showSys, setShowSys] = useState(false);
-  const [sysPeek, setSysPeek] = useState("");
+  const [budgetT, setBudgetT] = useState(8192);
+  const [reserveT, setReserveT] = useState(768);
+  /** 末条 char 消息的多候选（swipe）：list 全部候选文本，idx 当前显示者 */
+  const [alts, setAlts] = useState<{ list: string[]; idx: number } | null>(null);
+  const [editIdx, setEditIdx] = useState<number | null>(null);
+  const [editText, setEditText] = useState("");
 
   const ctrlRef = useRef<AbortController | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   const setupRef = useRef(setup);
+  const summaryRef = useRef(summary);
+  const initialRef = useRef(initial);
+  const onPersistRef = useRef(onPersist);
   useEffect(() => {
     setupRef.current = setup;
   }, [setup]);
-
-  // 换幕 / 重开：greeting 变则回到开场白
   useEffect(() => {
-    setTurns([{ role: "char", name: charName, content: greeting }]);
+    summaryRef.current = summary;
+  }, [summary]);
+  useEffect(() => {
+    initialRef.current = initial;
+  }, [initial]);
+  useEffect(() => {
+    onPersistRef.current = onPersist;
+  }, [onPersist]);
+
+  // 换幕 / 重开：greeting 变则回到开场白；带 initial 则恢复旧对话续写
+  useEffect(() => {
+    const init = initialRef.current;
+    if (init && init.turns.length > 0) {
+      setTurns(init.turns);
+      setSummary(init.summary || "");
+      setNote("已恢复上一场对话（点「重新开始」可清空重来）。");
+    } else {
+      setTurns([{ role: "char", name: charName, content: greeting }]);
+      setSummary("");
+      setNote(null);
+    }
+    setAlts(null);
+    setEditIdx(null);
     setInput("");
     setError(null);
-    setLoreHits(null);
   }, [greeting, charName]);
 
   useEffect(() => {
@@ -55,88 +110,181 @@ export function RpRunner({ setup, charName, userName, sceneLabel, greeting, disa
 
   useEffect(() => () => ctrlRef.current?.abort(), []);
 
-  /** 以给定历史流式生成下一条 assistant 回复 */
-  const streamAssistant = useCallback(async (history: RpTurn[]) => {
+  /** 稳定落定后通知父层落库（流式中间态不落，避免高频写） */
+  const settle = useCallback((next: RpTurn[], sum: string) => {
+    onPersistRef.current?.(next, sum);
+  }, []);
+
+  /** 组装预览（token 条/提示词预览实时反映，与实际发送同源同参） */
+  const assembly = useMemo(
+    () => rpAssemble(setup, turns, { budgetTokens: budgetT, reserveTokens: reserveT, summary }),
+    [setup, turns, budgetT, reserveT, summary],
+  );
+
+  /** 折叠一段旧历史进滚动摘要 */
+  const roll = useCallback(async (plan: { rollup: RpTurn[]; keep: RpTurn[] }) => {
+    setRollBusy(true);
+    try {
+      const obj = await chatJSON<{ summary?: unknown }>(
+        rollingSummaryPrompt(summaryRef.current, turnsTranscript(plan.rollup)),
+        { role: "analyzer" },
+      );
+      const s = typeof obj?.summary === "string" ? obj.summary.trim() : "";
+      if (!s) throw new Error("摘要结果为空");
+      summaryRef.current = s;
+      setSummary(s);
+      setTurns(plan.keep);
+      setAlts(null);
+      settle(plan.keep, s);
+      setNote(`前情已折叠：${plan.rollup.length} 条旧回合 → 摘要 ${s.length} 字。`);
+    } catch (e) {
+      setError(`折叠前情失败（不影响继续聊）：${errMsg(e)}`);
+    } finally {
+      setRollBusy(false);
+    }
+  }, [settle]);
+
+  /** 以给定历史流式生成下一条 assistant 回复（regen=true 时结果作为新候选追加） */
+  const streamAssistant = useCallback(async (history: RpTurn[], regen = false) => {
     const ctrl = new AbortController();
     ctrlRef.current = ctrl;
     setRunning(true);
     setError(null);
+    const asm = rpAssemble(setupRef.current, history, {
+      budgetTokens: budgetT,
+      reserveTokens: reserveT,
+      summary: summaryRef.current,
+    });
+    let acc = "";
     setTurns([...history, { role: "char", name: charName, content: "" }]);
     try {
-      const { messages, injected } = rpMessages(setupRef.current, history);
-      setLoreHits(injected.length);
-      setSysPeek(messages[0]?.content ?? "");
-      const out = await chat(messages, {
+      const out = await chat(asm.messages, {
         role: "writer",
         signal: ctrl.signal,
-        onDelta: (d) =>
+        onDelta: (d) => {
+          acc += d;
           setTurns((prev) => {
             const cp = prev.slice();
             const last = cp[cp.length - 1];
             cp[cp.length - 1] = { ...last, content: last.content + d };
             return cp;
-          }),
+          });
+        },
       });
-      setTurns((prev) => {
-        const cp = prev.slice();
-        const last = cp[cp.length - 1];
-        cp[cp.length - 1] = { ...last, content: out.content || last.content };
-        return cp;
+      const content = out.content && out.content.trim() ? out.content : acc;
+      const finalTurns: RpTurn[] = [...history, { role: "char", name: charName, content }];
+      setTurns(finalTurns);
+      // swipe 候选：重生成=追加新候选；新回复=候选列表归一为单条
+      setAlts((prev) => {
+        if (regen && prev && prev.list.length > 0) {
+          const list = [...prev.list, content];
+          return { list, idx: list.length - 1 };
+        }
+        return content.trim() ? { list: [content], idx: 0 } : null;
       });
+      settle(finalTurns, summaryRef.current);
+      // 自动滚动摘要：超阈值就折叠（analyzer 角色），失败不打断 RP
+      const plan = planRollingSummary(finalTurns, { thresholdTokens: ROLL_THRESHOLD, keepTurns: ROLL_KEEP });
+      if (plan) void roll(plan);
     } catch (e) {
       const aborted = (e as { name?: string })?.name === "AbortError";
-      // 收尾：空占位则移除，否则保留已生成的半句（人工续写/删除）
-      setTurns((prev) => {
-        const cp = prev.slice();
-        const last = cp[cp.length - 1];
-        if (last.role === "char" && !last.content.trim()) cp.pop();
-        return cp;
-      });
+      // 收尾：半句保留（人工续写/删除），空占位移除；从本地累积量确定性重建，不读渲染态
+      const cp: RpTurn[] = acc.trim() ? [...history, { role: "char", name: charName, content: acc }] : history;
+      setTurns(cp);
+      settle(cp, summaryRef.current);
       if (!aborted) setError(errMsg(e));
     } finally {
       setRunning(false);
       ctrlRef.current = null;
     }
-  }, [charName]);
+  }, [charName, roll, settle, budgetT, reserveT]);
 
   const send = () => {
     const text = input.trim();
     if (!text || running) return;
     setInput("");
+    setAlts(null); // 旧候选随发送定稿
     void streamAssistant([...turns, { role: "user", name: userName, content: text }]);
   };
 
+  /** 重生成＝追加一条 swipe 候选，旧候选保留可回滑 */
   const regenerate = () => {
-    if (running) return;
-    // 去掉末尾 assistant，重跑上一轮
+    if (running || rollBusy) return;
     let h = turns.slice();
     if (h.length && h[h.length - 1].role === "char") h.pop();
     if (!h.length) return;
-    void streamAssistant(h);
+    void streamAssistant(h, true);
+  };
+
+  const swipe = (delta: number) => {
+    if (!alts || alts.list.length < 2 || running || turns.length === 0 || turns[turns.length - 1].role !== "char") return;
+    const idx = (alts.idx + delta + alts.list.length) % alts.list.length;
+    setAlts({ ...alts, idx });
+    const cp = turns.slice();
+    cp[cp.length - 1] = { ...cp[cp.length - 1], content: alts.list[idx] };
+    setTurns(cp);
+    settle(cp, summaryRef.current);
   };
 
   const stop = () => ctrlRef.current?.abort();
 
+  const mutateTurns = (next: RpTurn[]) => {
+    setTurns(next);
+    setAlts(null);
+    settle(next, summaryRef.current);
+  };
+
   const delLast = () => {
-    if (running) return;
-    setTurns((prev) => (prev.length > 1 ? prev.slice(0, -1) : prev));
+    if (running || turns.length <= 1) return;
+    mutateTurns(turns.slice(0, -1));
+  };
+
+  const delTurn = (i: number) => {
+    if (running || turns.length <= 1) return;
+    mutateTurns(turns.filter((_, j) => j !== i));
+    setEditIdx(null);
+  };
+
+  const saveEdit = (i: number) => {
+    const text = editText.trim();
+    if (!text) return;
+    const cp = turns.slice();
+    cp[i] = { ...cp[i], content: text };
+    setEditIdx(null);
+    mutateTurns(cp);
   };
 
   const restart = () => {
     ctrlRef.current?.abort();
     setTurns([{ role: "char", name: charName, content: greeting }]);
+    setSummary("");
+    summaryRef.current = "";
+    setAlts(null);
     setInput("");
     setError(null);
-    setLoreHits(null);
+    setNote(null);
+    settle([{ role: "char", name: charName, content: greeting }], "");
+  };
+
+  const manualRoll = () => {
+    const plan = planRollingSummary(turns, { thresholdTokens: 0, keepTurns: ROLL_KEEP });
+    if (!plan) {
+      setNote("太短了，还没有可折叠的前情。");
+      return;
+    }
+    void roll(plan);
   };
 
   const bringBack = () => {
-    // 交给父层复盘：char↔user 逐条映射，丢弃空占位
     onBringBack(turns.filter((t) => t.content.trim()));
   };
 
   const userTurns = turns.filter((t) => t.role === "user").length;
   const canBringBack = userTurns >= 1 && !running;
+  const canRoll = !running && !rollBusy && turns.length > ROLL_KEEP + 1;
+
+  // token 预览条
+  const budgetTotal = Math.max(1, budgetT);
 
   return (
     <div>
@@ -145,8 +293,48 @@ export function RpRunner({ setup, charName, userName, sceneLabel, greeting, disa
           {sceneLabel}｜你扮演 <b>{userName}</b>，AI 扮演 <b>{charName}</b>（ST 默认标准·本机直连）
         </span>
         <span className="muted">
-          {loreHits !== null && `上一回合命中世界书 ${loreHits} 条`}
+          世界书命中 {assembly.injected.length} 条
+          {assembly.injected.some((m) => m.entry.sticky ? m.entry.sticky > 0 : false) ? "（含 sticky 续命）" : ""}
+          {assembly.dropped.length > 0 ? ` · 预算外 ${assembly.dropped.length} 条` : ""}
         </span>
+      </div>
+
+      {/* 上下文预算条：分段 token 占用（悬停看段名/处置） */}
+      <div style={{ marginTop: 6 }}>
+        <div style={{ display: "flex", height: 10, borderRadius: 5, overflow: "hidden", border: "1px solid var(--line)", background: "var(--bg)" }}>
+          {assembly.sections
+            .filter((s) => s.kept && s.tokens > 0)
+            .map((s, i) => (
+              <div
+                key={`${s.key}-${i}`}
+                title={`${s.label} ≈${s.tokens} tok${s.note ? `（${s.note}）` : ""}`}
+                style={{ width: `${(s.tokens / budgetTotal) * 100}%`, minWidth: 2, background: SEC_COLORS[s.key] ?? "#999" }}
+              />
+            ))}
+        </div>
+        <div className="row" style={{ gap: 10, flexWrap: "wrap", marginTop: 3, fontSize: 11 }}>
+          <span className="muted">
+            上下文 ≈{assembly.totalTokens} tok / 预算 {budgetT}（预留回复 {reserveT}）
+          </span>
+          {assembly.droppedTurns > 0 && <span style={{ color: "#e65100", fontSize: 11 }}>已裁旧消息 {assembly.droppedTurns} 条（前情摘要兜底）</span>}
+          {assembly.overflow && <span style={{ color: "#b3261e", fontSize: 11 }}>超出预算：保护段已占满，建议压缩前情或换短卡</span>}
+          {summary && <span className="muted">前情摘要 {summary.length} 字</span>}
+          <label className="muted" style={{ fontSize: 11 }}>
+            预算
+            <input type="number" min={1024} max={200000} step={256} value={budgetT} onChange={(e) => setBudgetT(Math.max(1024, Number(e.target.value) || 8192))} style={{ width: 80, marginLeft: 4 }} />
+          </label>
+          <label className="muted" style={{ fontSize: 11 }}>
+            预留回复
+            <input type="number" min={128} max={16384} step={128} value={reserveT} onChange={(e) => setReserveT(Math.min(16384, Math.max(128, Number(e.target.value) || 768)))} style={{ width: 70, marginLeft: 4 }} />
+          </label>
+        </div>
+        {alts && alts.list.length > 1 && (
+          <div className="row" style={{ gap: 6, marginTop: 2 }}>
+            <button className="muted" onClick={() => swipe(-1)} disabled={running} style={{ fontSize: 12 }}>←</button>
+            <span className="muted" style={{ fontSize: 12 }}>候选 {alts.idx + 1}/{alts.list.length}（重生成不覆盖，可回滑）</span>
+            <button className="muted" onClick={() => swipe(1)} disabled={running} style={{ fontSize: 12 }}>→</button>
+          </div>
+        )}
       </div>
 
       <div
@@ -164,20 +352,46 @@ export function RpRunner({ setup, charName, userName, sceneLabel, greeting, disa
           gap: 10,
         }}
       >
-        {turns.map((t, i) => (
-          <TurnBubble key={i} turn={t} userName={userName} charName={charName} streaming={running && i === turns.length - 1 && t.role === "char"} />
-        ))}
+        {turns.map((t, i) =>
+          editIdx === i ? (
+            <div key={i} style={{ alignSelf: t.role === "user" ? "flex-end" : "flex-start", width: "86%" }}>
+              <textarea rows={4} value={editText} onChange={(e) => setEditText(e.target.value)} style={{ width: "100%" }} />
+              <div className="row" style={{ marginTop: 4 }}>
+                <button className="primary" onClick={() => saveEdit(i)}>保存</button>
+                <button onClick={() => setEditIdx(null)}>取消</button>
+                {t.role === "user" && <span className="muted" style={{ fontSize: 11 }}>改用户台词只影响其后的生成</span>}
+              </div>
+            </div>
+          ) : (
+            <TurnBubble
+              key={i}
+              turn={t}
+              userName={userName}
+              charName={charName}
+              streaming={running && i === turns.length - 1 && t.role === "char"}
+              actions={
+                running ? undefined : (
+                  <span style={{ fontSize: 11 }}>
+                    <button className="muted" style={{ fontSize: 11, padding: "0 4px" }} onClick={() => { setEditIdx(i); setEditText(t.content); }} title="编辑这条">✎</button>
+                    <button className="muted" style={{ fontSize: 11, padding: "0 4px", marginLeft: 2 }} onClick={() => delTurn(i)} title="删除这条" disabled={turns.length <= 1}>✕</button>
+                  </span>
+                )
+              }
+            />
+          ),
+        )}
       </div>
 
       {error && <p style={{ color: "#b3261e", fontSize: 13 }}>{error}</p>}
+      {note && !error && <p className="muted" style={{ fontSize: 12 }}>{note}</p>}
 
       <label className="field" style={{ marginTop: 10 }}>
-        <span>{`你的行动 / 台词（{{user}}＝${userName}）— Enter 发送，Shift+Enter 换行`}</span>
+        <span>{`你的行动 / 台词（你扮演 ${userName}）— Enter 发送，Shift+Enter 换行`}</span>
         <textarea
           rows={3}
           value={input}
           disabled={disabled || running}
-          placeholder="描述 {{user}} 说的话或动作…"
+          placeholder="描述你要说的话或动作…"
           onChange={(e) => setInput(e.target.value)}
           onKeyDown={(e) => {
             if (e.key === "Enter" && !e.shiftKey) {
@@ -194,10 +408,15 @@ export function RpRunner({ setup, charName, userName, sceneLabel, greeting, disa
           {running ? "生成中…" : "发送"}
         </button>
         <button onClick={stop} disabled={!running}>停止</button>
-        <button onClick={regenerate} disabled={disabled || running}>重生成</button>
+        <button onClick={regenerate} disabled={disabled || running || rollBusy || !turns.some((t) => t.role === "user")}>
+          重生成（换候选）
+        </button>
         <button onClick={delLast} disabled={disabled || running || turns.length <= 1}>删除末条</button>
+        <button onClick={manualRoll} disabled={!canRoll} title="把较早的对话折叠进前情摘要（省 token）">
+          {rollBusy ? "折叠中…" : "🗜 压缩前情"}
+        </button>
         <button onClick={restart} disabled={running}>重新开始</button>
-        <button onClick={() => setShowSys((v) => !v)} disabled={!sysPeek}>
+        <button onClick={() => setShowSys((v) => !v)}>
           {showSys ? "隐藏提示词" : "查看提示词"}
         </button>
         <button className="primary" onClick={bringBack} disabled={disabled || !canBringBack}>
@@ -210,7 +429,15 @@ export function RpRunner({ setup, charName, userName, sceneLabel, greeting, disa
 
       {showSys && (
         <details open style={{ marginTop: 8 }}>
-          <summary className="muted">本轮 system 提示词（ST 默认标准组装结果）</summary>
+          <summary className="muted">本轮实际发送内容（管线 v2 组装结果，含分段清单）</summary>
+          <div style={{ margin: "6px 0", fontSize: 12 }}>
+            {assembly.sections.map((s, i) => (
+              <div key={`${s.key}-${i}`} className={s.kept ? "" : "muted"} style={{ textDecoration: s.kept ? undefined : "line-through" }}>
+                <span style={{ display: "inline-block", width: 10, height: 10, borderRadius: 2, background: SEC_COLORS[s.key] ?? "#999", marginRight: 6, opacity: s.kept ? 1 : 0.35 }} />
+                {s.label} ≈{s.tokens} tok{s.note ? `（${s.note}）` : ""}
+              </div>
+            ))}
+          </div>
           <pre
             style={{
               whiteSpace: "pre-wrap",
@@ -223,7 +450,7 @@ export function RpRunner({ setup, charName, userName, sceneLabel, greeting, disa
               fontSize: 12,
             }}
           >
-            {sysPeek}
+            {assembly.messages.map((m, i) => `── ${m.role} ──\n${m.content}`).join("\n\n")}
           </pre>
         </details>
       )}
@@ -231,12 +458,27 @@ export function RpRunner({ setup, charName, userName, sceneLabel, greeting, disa
   );
 }
 
-function TurnBubble({ turn, userName, charName, streaming }: { turn: RpTurn; userName: string; charName: string; streaming: boolean }) {
+function TurnBubble({
+  turn,
+  userName,
+  charName,
+  streaming,
+  actions,
+}: {
+  turn: RpTurn;
+  userName: string;
+  charName: string;
+  streaming: boolean;
+  actions?: React.ReactNode;
+}) {
   const isUser = turn.role === "user";
   return (
     <div style={{ alignSelf: isUser ? "flex-end" : "flex-start", maxWidth: "86%" }}>
       <div className="muted" style={{ fontSize: 12, marginBottom: 2, textAlign: isUser ? "right" : "left" }}>
-        {isUser ? userName : charName}
+        {isUser ? userName : turn.role === "system" ? "系统" : charName}
+        {actions && (
+          <span style={{ marginLeft: isUser ? 0 : 6, marginRight: isUser ? 6 : 0, float: isUser ? "left" : "right" }}>{actions}</span>
+        )}
       </div>
       <div
         style={{
