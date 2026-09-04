@@ -357,12 +357,29 @@ export async function addProposals(records: LedgerRecord[]): Promise<LedgerRecor
   return rows;
 }
 
-/** 台账列表：可按状态过滤（走 [projectId+status] 复合索引）；按 createdAt 升序。 */
-export async function listLedger(projectId: ID, status?: LedgerStatus): Promise<LedgerRecord[]> {
+/** 台账列表：可按状态过滤（走 [projectId+status] 复合索引）；按 createdAt 升序。
+ *  roomId 给定 → 只返回绑定该房间的（room-scoped 正典）；roomId==="*" → 只返回作品级（roomId 缺失）。 */
+export async function listLedger(projectId: ID, status?: LedgerStatus, roomId?: ID | "*"): Promise<LedgerRecord[]> {
   const rows = status
     ? await db.ledger.where("[projectId+status]").equals([projectId, status]).toArray()
     : await db.ledger.where("projectId").equals(projectId).toArray();
-  return rows.sort((a, b) => a.createdAt - b.createdAt);
+  const scoped =
+    roomId === "*" ? rows.filter((r) => !r.roomId) : roomId ? rows.filter((r) => r.roomId === roomId) : rows;
+  return scoped.sort((a, b) => a.createdAt - b.createdAt);
+}
+
+/** 房间正典直写：剧场场记/定时写入用，落 confirmed 且绑定 roomId（该房间独立正典，不污染作品级台账）。 */
+export async function addRoomCanon(records: LedgerRecord[]): Promise<LedgerRecord[]> {
+  const now = Date.now();
+  const rows: LedgerRecord[] = records.map((r) => ({
+    ...r,
+    id: r.id || uid(),
+    status: "confirmed" as const,
+    createdAt: r.createdAt > 0 ? r.createdAt : now,
+  }));
+  if (rows.length === 0) return rows;
+  await db.ledger.bulkPut(rows);
+  return rows;
 }
 
 /** 提案裁决：确认/驳回。返回更新后整条（不存在则 undefined）。 */
@@ -399,6 +416,24 @@ export async function saveSession(session: RPSession): Promise<RPSession> {
 export async function listSessions(projectId: ID): Promise<RPSession[]> {
   const rows = await db.sessions.where("projectId").equals(projectId).toArray();
   return rows.sort((a, b) => b.updatedAt - a.updatedAt);
+}
+
+/** 全部会话（剧场左栏跨作品列表）：最近活跃在前。 */
+export async function listAllSessions(): Promise<RPSession[]> {
+  const rows = await db.sessions.toArray();
+  return rows.sort((a, b) => b.updatedAt - a.updatedAt);
+}
+
+/** 单条会话（剧场按 id 载入，跨作品）。 */
+export async function getSession(id: ID): Promise<RPSession | undefined> {
+  return db.sessions.get(id);
+}
+
+/** 删除会话（剧场房间删除；连带清掉该房间绑定的台账行，正典随房间消亡）。 */
+export async function deleteSession(id: ID): Promise<void> {
+  await db.sessions.delete(id);
+  const rows = await db.ledger.where("roomId").equals(id).toArray();
+  if (rows.length > 0) await db.ledger.bulkDelete(rows.map((r) => r.id));
 }
 
 // ============================================================

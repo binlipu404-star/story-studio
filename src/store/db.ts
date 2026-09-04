@@ -53,6 +53,12 @@ export class StoryStudioDB extends Dexie {
     });
     // v2：用户画像库（全局跨作品，无 projectId）
     this.version(2).stores({ personas: "id, updatedAt" });
+    // v3：剧场独立化——台账按房间绑定（roomId 稀疏索引：作品级行无此键，不入索引）；
+    //     会话按 kind 过滤剧场房间。新增均为可选字段，老数据无需迁移。
+    this.version(3).stores({
+      sessions: "id, projectId, kind",
+      ledger: "id, projectId, [projectId+status], roomId",
+    });
   }
 }
 

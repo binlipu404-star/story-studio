@@ -36,6 +36,10 @@ export interface RpSetup {
   systemExtra?: string;
   /** 台账快照+伏笔欠账（flow/snapshot.ledgerFacts 产物，可空；N2 组装管线注入） */
   ledgerBlock?: string;
+  /** 剧场剧本副本块（flow/script.scriptBlock 产物；有则注入【剧本副本】段） */
+  scriptBlock?: string;
+  /** 剧场推演节奏（undefined=不加节奏段=ST 原行为） */
+  pace?: "tight" | "loose";
   loreEntries: LoreEntry[]; // 已启用的世界书词条
   loreSettings: LorebookSettings; // 扫描深度 / 预算 / 递归
 }
@@ -74,9 +78,29 @@ function nonEmpty(s: string | undefined): boolean {
   return !!s && s.trim().length > 0;
 }
 
+/**
+ * 剧场推演节奏指令（v3）：tight=强引导快推；loose=弱引导允许跑题。
+ * 主指令「主动制造张力」在两种节奏下都保留——loose 只是解除「必须推进」的压力。
+ */
+export function paceDirective(pace: "tight" | "loose"): string {
+  return pace === "tight"
+    ? [
+        "【推演节奏：紧凑】",
+        "- 你的回复要有强引导性：每轮结尾主动抛出一个具体的钩子、危机或抉择，把 {{user}} 引向剧本的下一个节拍。",
+        "- 以较快的节奏推演：允许你在合理范围内让事件提前发生、让人物主动找上门，但不得替 {{user}} 做决定。",
+        "- {{user}} 明显跑题时，用剧情内自然的方式（新事件、旁人打断、环境变化）把局面收回剧本方向，最多绕一轮。",
+      ].join("\n")
+    : [
+        "【推演节奏：舒缓】",
+        "- 你的回复引导性要弱：跟随 {{user}} 的关注点展开，不刻意把对话拉向剧本节点；允许闲谈、氛围描写与人物互动多轮不推进主线。",
+        "- 剧本只是底色：只有当 {{user}} 的行动自然触及剧情时，才顺势让相应事件浮现；跑题与偏离都是合法玩法。",
+        "- 不要连续追问式催推进；把「接下来发生什么」的选择权留给 {{user}}。",
+      ].join("\n");
+}
+
 /** system 提示词分段（组装序）。priority=∞ 永不裁；有限值小者先裁。 */
 export interface RpSystemSection {
-  key: "roleDirective" | "extra" | "loreBefore" | "card" | "persona" | "ledger" | "examples" | "loreAfter" | "authorNote";
+  key: "roleDirective" | "pace" | "extra" | "loreBefore" | "card" | "persona" | "ledger" | "script" | "examples" | "loreAfter" | "authorNote";
   label: string;
   text: string;
   priority: number;
@@ -99,6 +123,7 @@ export function rpSystemSections(setup: RpSetup, loreBefore = "", loreAfter = ""
   });
 
   if (nonEmpty(setup.systemExtra)) sections.push({ key: "extra", label: "本幕指引", text: setup.systemExtra!.trim(), priority: NEVER });
+  if (nonEmpty(setup.pace)) sections.push({ key: "pace", label: "推演节奏", text: paceDirective(setup.pace!), priority: NEVER });
   if (nonEmpty(loreBefore)) sections.push({ key: "loreBefore", label: "世界书·背景", text: `【世界书·背景】\n${loreBefore.trim()}`, priority: 10 });
 
   const card: string[] = [`你是 ${charName}。`];
@@ -112,6 +137,9 @@ export function rpSystemSections(setup: RpSetup, loreBefore = "", loreAfter = ""
   }
   if (nonEmpty(setup.ledgerBlock)) {
     sections.push({ key: "ledger", label: "台账快照", text: `【台账快照·正典事实】\n${setup.ledgerBlock!.trim()}`, priority: 40 });
+  }
+  if (nonEmpty(setup.scriptBlock)) {
+    sections.push({ key: "script", label: "剧本副本", text: setup.scriptBlock!.trim(), priority: 45 });
   }
   if (nonEmpty(setup.exampleDialogue)) {
     sections.push({ key: "examples", label: "对话范例", text: applyMacros(`【对话范例｜仅供口吻与格式参考，禁止逐字复述或续写范例】\n${setup.exampleDialogue!.trim()}`, charName, userName), priority: 5 });

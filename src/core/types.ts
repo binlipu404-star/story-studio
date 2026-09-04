@@ -214,6 +214,31 @@ export interface RPMessage {
   createdAt: number;
 }
 
+// ---------- RP 剧场：剧本副本与房间（v3 剧场独立化） ----------
+export type TheaterPace = "tight" | "loose"; // 紧凑=强引导快推 / 舒缓=弱引导允许跑题
+export type TheaterScope = "full" | "chapters"; // 全剧（感知主纲更新）/ 章选（试跑，不敏感）
+export type TheaterSandbox = boolean;
+
+export interface ScriptBeatRef {
+  id: string; // 主纲 Beat.id 的副本引用（只读引用；标记只写房间 progress）
+  text: string;
+}
+
+/** 房间创建/同步时的剧本快照：此后聊天只认副本，主纲改动不自动渗透 */
+export interface ScriptSnapshot {
+  sourceTitle: string;
+  takenAt: number;
+  nodesUpdatedAt: number; // 快照时全部节点的最大 updatedAt（检测主纲变化的依据）
+  scenes: {
+    nodeId: ID | null; // 主纲节点 id（同步/定位用；永不回写）
+    path: string; // 卷/章/幕 全路径
+    title: string;
+    intent: string;
+    beats: ScriptBeatRef[];
+    foreshadows: { id: string; setup: string }[];
+  }[];
+}
+
 export interface RPSession {
   id: ID;
   projectId: ID;
@@ -225,6 +250,14 @@ export interface RPSession {
   status: "testing" | "canon" | "abandoned";
   createdAt: number;
   updatedAt: number;
+  // ---- RP 剧场房间扩展（全部可选：旧试跑会话天然不属于剧场） ----
+  kind?: "theater"; // 有 = 剧场房间（左栏列表按此过滤）
+  name?: string; // 房间名（列表展示/重命名）
+  pace?: TheaterPace;
+  scopeMode?: TheaterScope;
+  sandbox?: TheaterSandbox; // 自由即兴房：无剧本
+  script?: ScriptSnapshot; // 剧本副本（沙盒房=空 scenes）
+  progress?: Record<string, "done" | "skipped">; // 副本节拍完成标记（key=ScriptBeatRef.id；永不回写主纲）
 }
 
 // ---------- 台账（M6 使用，M0 先落表） ----------
@@ -240,6 +273,7 @@ export interface LedgerRecord {
   provenance?: { sessionId: ID; msgId: ID }; // 溯源：产生它的 RP 消息
   status: LedgerStatus;
   createdAt: number;
+  roomId?: ID; // 剧场房间正典绑定：有 = 只属于该房间（新房间从空白正典开始）；无 = 作品级台账
 }
 
 // ---------- 用户画像（全局，跨作品；{{user}} 在不同故事中的形象） ----------
