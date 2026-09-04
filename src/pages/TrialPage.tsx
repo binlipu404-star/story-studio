@@ -30,6 +30,7 @@ import {
 } from "../flow/outline";
 import { buildTrialPack, synthesizeNarratorCard, type TrialPack } from "../flow/trialpack";
 import type { RpSetup, RpTurn } from "../flow/rp";
+import { beatBookJson } from "../flow/beats2book";
 import { RpRunner } from "../components/RpRunner";
 import { exportCardV2 } from "../st/card";
 import { exportLorebookGlobal } from "../st/lorebook";
@@ -134,6 +135,8 @@ export function TrialPage({ projectId }: { projectId: string }) {
   const [copyMsg, setCopyMsg] = useState<string | null>(null);
   /** 生成试跑包的同时快照的站内 RP 装配（存在 = 可以不开 ST 直接聊） */
   const [rpSetup, setRpSetup] = useState<RpSetup | null>(null);
+  /** L3 节拍世界书：一键生成的 ST 自动推拍 world info 文件 */
+  const [beatBook, setBeatBook] = useState<{ json: string; lines: string[]; fileName: string } | null>(null);
 
   // ---- 步骤2：导回与分析 ----
   const [parsed, setParsed] = useState<ParsedChatMessage[] | null>(null);
@@ -207,6 +210,7 @@ export function TrialPage({ projectId }: { projectId: string }) {
     setPackError(null);
     setCopyMsg(null);
     setRpSetup(null);
+    setBeatBook(null);
     setParsed(null);
     setRecap(null);
     setChecked([]);
@@ -229,6 +233,7 @@ export function TrialPage({ projectId }: { projectId: string }) {
     setPack(null);
     setPackLeadLabel("");
     setCopyMsg(null);
+    setBeatBook(null);
     if (!scene) {
       setPackError("当前作品还没有可试跑的「幕」，请先在大纲工作台创建。");
       return;
@@ -315,6 +320,35 @@ export function TrialPage({ projectId }: { projectId: string }) {
       );
       setPack(built);
     } catch (e) {
+      setPackError(errMsg(e));
+    }
+  };
+
+  // ---------- L3：节拍 → ST 世界书（自动推拍，零换手） ----------
+
+  const generateBeatBook = () => {
+    if (!scene) return;
+    setPackError(null);
+    const byId = new Map(characters.map((c) => [c.id, c] as const));
+    const castNames = Array.from(
+      new Set([...scene.cast.map((id) => byId.get(id)?.name ?? ""), leadChar?.name ?? ""].filter(Boolean)),
+    );
+    try {
+      const { json, result } = beatBookJson(scene.beats, castNames);
+      if (result.entries.length === 0) {
+        setBeatBook(null);
+        setPackError("这一幕没有待演节拍（无节拍或全部已标记完成），不需要节拍书。");
+        return;
+      }
+      setBeatBook({
+        json,
+        lines: result.entries.map(
+          (e) => `${e.comment}  ←  ${e.constant ? "无触发词 · 蓝灯常驻" : (e.keys ?? []).join("、")}`,
+        ),
+        fileName: `worldbook-beats-${scene.title || "scene"}.json`,
+      });
+    } catch (e) {
+      setBeatBook(null);
       setPackError(errMsg(e));
     }
   };
@@ -622,6 +656,45 @@ export function TrialPage({ projectId }: { projectId: string }) {
                 <button onClick={() => void onCopyFile(f.name, f.content)}>复制</button>
               </div>
             ))}
+
+            {/* L3：节拍词条化——让 ST 自己按拍推进，不用来回换手 */}
+            <div style={{ marginTop: 10, borderTop: "1px dashed var(--line)", paddingTop: 8 }}>
+              <div className="row">
+                <button onClick={generateBeatBook}>🥁 生成节拍世界书（ST 自动推拍）</button>
+                <span className="muted">
+                  每个待演节拍一条触发式条目：聊到触发词时该拍指令自动注入、停留数轮后退场；同轮只出一条、靠前拍优先。
+                </span>
+              </div>
+              {beatBook && (
+                <div style={{ marginTop: 6 }}>
+                  <pre
+                    style={{
+                      whiteSpace: "pre-wrap",
+                      wordBreak: "break-word",
+                      background: "var(--bg)",
+                      padding: 10,
+                      borderRadius: 8,
+                      fontSize: 12,
+                      margin: 0,
+                    }}
+                  >
+                    {beatBook.lines.join("\n")}
+                  </pre>
+                  <div className="row" style={{ marginTop: 6 }}>
+                    <button onClick={() => downloadText(beatBook.fileName, beatBook.json)}>
+                      下载 {beatBook.fileName}
+                    </button>
+                    <button onClick={() => void onCopyFile("节拍世界书 JSON", beatBook.json)}>复制</button>
+                  </div>
+                  <p className="muted" style={{ fontSize: 12 }}>
+                    在 ST「世界信息 World Info」面板导入此 json 即可（可与试跑包的 worldbook.json 并存）。
+                    触发词由启发式自动抽取，觉得不准可在 ST 里直接改条目关键词；sticky/cooldown 由 ST 本体调度，
+                    站内匹配器不模拟这两项（站内推进请走「带回复盘」）。
+                  </p>
+                </div>
+              )}
+            </div>
+
             {copyMsg && <p className="muted">{copyMsg}</p>}
           </div>
         )}
