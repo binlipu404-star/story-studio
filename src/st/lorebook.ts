@@ -279,10 +279,11 @@ export function exportLorebookGlobal(entries: LoreEntry[]): Record<string, unkno
       group: e.group ?? "",
       groupOverride: e.groupOverride ?? false,
       groupWeight: e.groupWeight ?? 100,
+      // 有组的条目必须显式启用组打分，否则 ST 不会做组内择一（默认继承=全局关）
+      useGroupScoring: e.group ? true : false,
       scanDepth: null,
       caseSensitive: e.caseSensitive ? true : null,
       matchWholeWords: e.matchWholeWord ? true : null,
-      useGroupScoring: false,
       automationId: "",
       role: 0,
       sticky: e.sticky ?? 0,

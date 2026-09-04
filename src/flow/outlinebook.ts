@@ -3,12 +3,16 @@
 //
 // 与早期"节拍书"的区别：一本完整、可在酒馆长期管理的书——
 //   · 粒度为「幕」：每幕一条导演指令（期望事件列表内嵌），不再一拍一条；
-//   · 调度沿用 ST 原生机制：触发词命中 → depth 深度注入 → sticky 停留 →
-//     cooldown 冷却；同组互斥 + 靠前幕权重高 → 天然按幕推进、不刷屏；
+//   · 调度沿用 ST 原生机制：触发词命中 → depth 深度注入 → sticky 短暂停留 →
+//     cooldown 长冷却。注意 ST 的真相：sticky 激活期间无需再命中也持续注入
+//     （world-info.js「activated because active sticky」），且 AI 演拍时会自己
+//     把触发词写进正文 → 冷却结束几乎必然再触发。故参数取「短停留 + 长冷却」，
+//     组内再以后幕优先择一注入；真正的"已演作废"靠模型自律（一次性文案）+
+//     场间换书（复盘标 done → 重新生成导入）双重兜底，ST 内没有 AI 反向标记通道。
 //   · 不绑定任何角色：只指导叙事推进，不定义角色；指令文本用酒馆变量
 //     {{char}}/{{user}} 指代当前对象，导入任何角色即时可用；
-//   · 已演完自动退场：节拍 done 标「已演」，整幕 done（状态机）默认整条跳过，
-//     复盘标记后重新生成，书会自己"变薄"。
+//   · 已演完的幕在「重新生成」时整条退场（复盘里标记节拍已演）——这是书与书
+//     之间的事；一场 RP 内条目不会自己作废，只会按 sticky/cooldown 衰减。
 //
 // 纯逻辑模块：依赖 ../st/lorebook.js 导出器，可进 Node 冒烟测试。
 // ============================================================
@@ -21,10 +25,10 @@ export const STORY_GROUP = "story-studio·剧情推进";
 
 /** 一本完整书自带的使用协议（蓝灯常驻）：教模型怎么读这些导演指令 */
 export const STORY_PROTOCOL = [
-  "【剧情推进协议】本书条目是虚构故事的导演指令（作者注释性质），不是世界事实。",
+  "【剧情推进协议】本书条目是虚构故事的导演指令（作者注释性质），不是世界事实，也不定义任何角色。",
+  "每条指令都是一次性的：对应事件一旦在正文中演出即自动作废；即使该指令之后再次出现，也绝不重复演一遍，只推进尚未发生的事。",
   "被激活的条目描述当前应推进的剧情：让 {{char}} 及其他虚构角色把局面推向尚未演出的事件，并为 {{user}} 的介入留白。",
   "绝不替 {{user}} 发言或行动；玩家若明显偏离指令，尊重玩家选择，但保留指令事件日后发生的可能。",
-  "与当前剧情无关、或标注「已演」的指令一律忽略。",
 ].join("\n");
 
 export interface OutlineBookScene {
@@ -45,8 +49,8 @@ export interface OutlineBookOptions {
   projectId?: string;
   uidStart?: number;
   depth?: number; // 默认 1：贴着最新一条消息注入
-  sticky?: number; // 默认 8：幕级指令值得停留更久
-  cooldown?: number; // 默认 4
+  sticky?: number; // 默认 3：触发后再停留 3 条消息（宁短勿长，防演完还赖着）
+  cooldown?: number; // 默认 10：sticky 结束后禁止重激活 10 条消息（AI 演拍时会自写触发词，冷却必须长）
   includeDone?: boolean; // 默认 false：已演完的幕不成条
   maxKeys?: number; // 每幕触发词上限，默认 8
   protocolEntry?: boolean; // 默认 true：附带蓝灯「使用协议」条目
@@ -174,7 +178,7 @@ function sceneDirective(s: OutlineBookScene, order: number, total: number): stri
     beats.forEach((b, i) => head.push(`${i + 1}. ${b.text.trim()}${b.done ? "（已演）" : ""}`));
   }
   head.push(
-    "执行：让 {{char}} 与其他登场角色把剧情推向尚未演出的期望事件，为 {{user}} 的介入留白；全部已演则忽略本条。",
+    "执行：让 {{char}} 与其他登场角色把剧情推向尚未演出的期望事件，为 {{user}} 的介入留白。本指令一次性——对应事件一经演出即作废，此后本条再出现也绝不重演，直接忽略。",
   );
   return head.join("\n");
 }
@@ -188,8 +192,8 @@ export function outlineBookEntries(
     projectId = "outline-book",
     uidStart = 1,
     depth = 1,
-    sticky = 8,
-    cooldown = 4,
+    sticky = 3,
+    cooldown = 10,
     includeDone = false,
     maxKeys = 8,
     protocolEntry = true,
@@ -249,7 +253,9 @@ export function outlineBookEntries(
     e.sticky = fallback ? null : sticky;
     e.cooldown = fallback ? null : cooldown;
     e.group = fallback ? "" : STORY_GROUP;
-    e.groupWeight = (total - idx) * 10; // 靠前幕权重高 → 命中并列优先推最早的幕
+    // 后幕权重高：同轮多幕命中时优先注入「更接近当前进度」的那条
+    // （ST 组打分按权重择一；sticky 激活者直接当选，故 sticky 必须短）
+    e.groupWeight = (idx + 1) * 10;
     e.extensions = { story_studio_scene: true, scene_node: s.nodeId, scene_index: idx + 1 };
     entries.push(e);
     scenesByEntry.push({ scene: s.title || `#${idx + 1}`, keys, fallback });

@@ -43,13 +43,13 @@ export default async function (t) {
   t.ok(s1.content.includes("第 1 幕") && s1.content.includes("（已演）"), "4. 内容含幕号与已演标记");
   t.ok(s1.content.includes("{{char}}") && s1.content.includes("{{user}}"), "4. 指令文本用酒馆变量");
   t.eq(s1.depth, 1, "4. depth=1");
-  t.eq(s1.sticky, 8, "4. sticky=8");
-  t.eq(s1.cooldown, 4, "4. cooldown=4");
+  t.eq(s1.sticky, 3, "4. sticky=3（短停留）");
+  t.eq(s1.cooldown, 10, "4. cooldown=10（长冷却防自写触发词重触发）");
   t.eq(s1.group, STORY_GROUP, "4. 同组互斥");
   // 幕号保持全幕视角（跳过不重排）：s3 是池内第 3 条
   const s3 = r.entries[2];
   t.ok(s3.comment.startsWith("幕 3/4"), "4. 幕号不因跳过重排：" + s3.comment);
-  t.ok(s1.groupWeight > s3.groupWeight, "4. 靠前幕权重高");
+  t.ok(s3.groupWeight > s1.groupWeight, "4. 后幕权重高（更接近当前进度者优先）");
 
   // 5. 弱触发兜底：s4 只有标题 → 蓝灯不入组
   const s4 = r.entries[3];
@@ -64,11 +64,13 @@ export default async function (t) {
   const raw = JSON.parse(json);
   t.ok(Object.keys(raw.entries).join(",") === "1,2,3,4", "7. uid 数字字符串键");
   const e2 = raw.entries["2"];
-  t.eq(e2.sticky, 8, "7. sticky 数字导出");
-  t.eq(e2.cooldown, 4, "7. cooldown 导出");
+  t.eq(e2.sticky, 3, "7. sticky 数字导出");
+  t.eq(e2.cooldown, 10, "7. cooldown 导出");
+  t.eq(e2.useGroupScoring, true, "7. 有组条目显式启用组打分（否则 ST 组内择一不生效）");
   t.eq(e2.characterBinding, undefined, "7. 不绑定任何角色");
   t.ok(Array.isArray(e2.key) && e2.key.includes("祭坛之夜"), "7. key 数组导出");
   t.eq(e2.disable, false, "7. disable=false");
+  t.eq(raw.entries["1"].useGroupScoring, false, "7. 无组条目组打分=false");
 
   // 8. 协议可关
   t.eq(outlineBookEntries(SCENES, { protocolEntry: false }).entries[0].comment.includes("幕 1/4"), true, "8. protocolEntry=false 首条即幕条目");
