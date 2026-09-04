@@ -8,7 +8,8 @@
 // ============================================================
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { chat, chatJSON } from "../ai/client";
-import { rollingSummaryPrompt } from "../ai/prompts";
+import { rollingDigestPrompt, rollingSummaryPrompt } from "../ai/prompts";
+import { sanitizeDigest, type DigestLedgerItem } from "../flow/snapshot";
 import { planRollingSummary, rpAssemble, turnsTranscript, type RpTurn, type RpSetup } from "../flow/rp";
 
 function errMsg(e: unknown): string {
@@ -46,11 +47,13 @@ export interface RpRunnerProps {
   initial?: { turns: RpTurn[]; summary: string } | null;
   /** 每次稳定落定（流式结束/编辑/滑动/折叠）后回调，父层负责落库 */
   onPersist?: (turns: RpTurn[], summary: string) => void;
+  /** 提供则滚动摘要升级为 digest：折叠点同时抽取台账事实并回调（RP 剧场自动台账） */
+  onDigest?: (items: DigestLedgerItem[]) => void;
   /** 带这些对话去复盘 */
   onBringBack: (turns: RpTurn[]) => void;
 }
 
-export function RpRunner({ setup, charName, userName, sceneLabel, greeting, disabled, initial, onPersist, onBringBack }: RpRunnerProps) {
+export function RpRunner({ setup, charName, userName, sceneLabel, greeting, disabled, initial, onPersist, onDigest, onBringBack }: RpRunnerProps) {
   const [turns, setTurns] = useState<RpTurn[]>([{ role: "char", name: charName, content: greeting }]);
   const [summary, setSummary] = useState("");
   const [input, setInput] = useState("");
@@ -72,9 +75,13 @@ export function RpRunner({ setup, charName, userName, sceneLabel, greeting, disa
   const summaryRef = useRef(summary);
   const initialRef = useRef(initial);
   const onPersistRef = useRef(onPersist);
+  const digestRef = useRef(onDigest);
   useEffect(() => {
     setupRef.current = setup;
   }, [setup]);
+  useEffect(() => {
+    digestRef.current = onDigest;
+  }, [onDigest]);
   useEffect(() => {
     summaryRef.current = summary;
   }, [summary]);
@@ -121,22 +128,31 @@ export function RpRunner({ setup, charName, userName, sceneLabel, greeting, disa
     [setup, turns, budgetT, reserveT, summary],
   );
 
-  /** 折叠一段旧历史进滚动摘要 */
+  /** 折叠一段旧历史进滚动摘要（接了 onDigest 则同场抽取台账事实） */
   const roll = useCallback(async (plan: { rollup: RpTurn[]; keep: RpTurn[] }) => {
     setRollBusy(true);
     try {
-      const obj = await chatJSON<{ summary?: unknown }>(
-        rollingSummaryPrompt(summaryRef.current, turnsTranscript(plan.rollup)),
+      const useDigest = Boolean(digestRef.current);
+      const transcript = turnsTranscript(plan.rollup);
+      const obj = await chatJSON<unknown>(
+        useDigest
+          ? rollingDigestPrompt(summaryRef.current, transcript)
+          : rollingSummaryPrompt(summaryRef.current, transcript),
         { role: "analyzer" },
       );
-      const s = typeof obj?.summary === "string" ? obj.summary.trim() : "";
-      if (!s) throw new Error("摘要结果为空");
-      summaryRef.current = s;
-      setSummary(s);
+      const d = sanitizeDigest(obj);
+      if (!d.summary) throw new Error("摘要结果为空");
+      summaryRef.current = d.summary;
+      setSummary(d.summary);
       setTurns(plan.keep);
       setAlts(null);
-      settle(plan.keep, s);
-      setNote(`前情已折叠：${plan.rollup.length} 条旧回合 → 摘要 ${s.length} 字。`);
+      settle(plan.keep, d.summary);
+      if (useDigest && d.ledger.length > 0) digestRef.current?.(d.ledger);
+      setNote(
+        `前情已折叠：${plan.rollup.length} 条旧回合 → 摘要 ${d.summary.length} 字` +
+          (useDigest ? `；顺手记下台账事实 ${d.ledger.length} 条（进台账页待确认）` : "") +
+          "。",
+      );
     } catch (e) {
       setError(`折叠前情失败（不影响继续聊）：${errMsg(e)}`);
     } finally {

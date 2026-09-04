@@ -6,17 +6,20 @@
 import { useCallback, useEffect, useState, type FormEvent } from "react";
 import type { Project } from "../core/types";
 import * as repos from "../store/repos";
+import { bundleZipBytes } from "../flow/bundle";
 import { InterviewPage } from "./InterviewPage";
 import { OutlinePage } from "./OutlinePage";
+import { TheaterPage } from "./TheaterPage";
 import { TrialPage } from "./TrialPage";
 import { LedgerPage } from "./LedgerPage";
 import { CastPage } from "./CastPage";
 import { LorePage } from "./LorePage";
 
-type WsTab = "interview" | "outline" | "trial" | "ledger" | "cast" | "lore";
+type WsTab = "interview" | "outline" | "theater" | "trial" | "ledger" | "cast" | "lore";
 const WS_TABS: { id: WsTab; label: string }[] = [
   { id: "interview", label: "构思访谈" },
   { id: "outline", label: "大纲工作台" },
+  { id: "theater", label: "RP 剧场" },
   { id: "trial", label: "ST 试跑" },
   { id: "ledger", label: "台账" },
   { id: "cast", label: "人物卡" },
@@ -25,6 +28,16 @@ const WS_TABS: { id: WsTab; label: string }[] = [
 
 function formatTime(ts: number): string {
   return new Date(ts).toLocaleString();
+}
+
+/** 二进制下载（zip） */
+function downloadBlob(name: string, bytes: Uint8Array) {
+  const url = URL.createObjectURL(new Blob([(bytes.slice(0).buffer as ArrayBuffer)], { type: "application/zip" }));
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = name;
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(url), 30_000);
 }
 
 // ------------------------------------------------------------
@@ -140,6 +153,35 @@ function ProjectWorkspace({ project, onBack }: { project: Project; onBack: () =>
   const [stats, setStats] = useState<Stats | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [wsTab, setWsTab] = useState<WsTab>("interview");
+  const [exporting, setExporting] = useState(false);
+  const [exportMsg, setExportMsg] = useState<string | null>(null);
+
+  const exportBundle = async () => {
+    setExporting(true);
+    setExportMsg(null);
+    try {
+      const [proj, nodes, chars, lore, ledger, sessions] = await Promise.all([
+        repos.getProject(project.id),
+        repos.listNodes(project.id),
+        repos.listCharacters(project.id),
+        repos.listLoreEntries(project.id),
+        repos.listLedger(project.id),
+        repos.listSessions(project.id),
+      ]);
+      if (!proj) {
+        setExportMsg("作品不存在（可能已被删除）。");
+        return;
+      }
+      const bytes = bundleZipBytes({ project: proj, nodes, characters: chars, loreEntries: lore, ledger, sessions });
+      const safeTitle = (proj.title || "story").replace(/[\\/:*?"<>|]/g, "_");
+      downloadBlob(`${safeTitle}-story-studio.zip`, bytes);
+      setExportMsg(`已导出 ${(bytes.length / 1024).toFixed(0)} KB。`);
+    } catch (e) {
+      setExportMsg(`导出失败：${e instanceof Error ? e.message : String(e)}`);
+    } finally {
+      setExporting(false);
+    }
+  };
 
   const refreshStats = useCallback(async () => {
     try {
@@ -204,6 +246,16 @@ function ProjectWorkspace({ project, onBack }: { project: Project; onBack: () =>
       </div>
 
       <div className="panel row">
+        <button onClick={() => void exportBundle()} disabled={exporting}>
+          {exporting ? "打包中…" : "📦 导出项目包（zip）"}
+        </button>
+        <span className="muted" style={{ fontSize: 12 }}>
+          大纲 md/json + 作品档案 + 台账 + RP 转写 + 人物卡（V2）+ 世界书（ST 格式），备份/迁移/进酒馆一包带走。
+        </span>
+        {exportMsg && <span className="muted">{exportMsg}</span>}
+      </div>
+
+      <div className="panel row">
         {WS_TABS.map((t) => (
           <button key={t.id} className={wsTab === t.id ? "tab active" : "tab"} onClick={() => setWsTab(t.id)}>
             {t.label}
@@ -212,6 +264,7 @@ function ProjectWorkspace({ project, onBack }: { project: Project; onBack: () =>
       </div>
       {wsTab === "interview" && <InterviewPage projectId={project.id} />}
       {wsTab === "outline" && <OutlinePage projectId={project.id} />}
+      {wsTab === "theater" && <TheaterPage projectId={project.id} />}
       {wsTab === "trial" && <TrialPage projectId={project.id} />}
       {wsTab === "ledger" && <LedgerPage projectId={project.id} />}
       {wsTab === "cast" && <CastPage projectId={project.id} />}

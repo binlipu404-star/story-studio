@@ -161,3 +161,34 @@ export function ledgerFacts(records: LedgerRecord[], nodes: OutlineNode[]): stri
   const debt = debtText(foreshadowDebt(nodes, records));
   return [snap, debt].filter(Boolean).join("\n\n");
 }
+
+// ---------- 场记 digest 净化（rollingDigestPrompt 产物 → 可落库形状） ----------
+
+export interface DigestLedgerItem {
+  type: LedgerType;
+  content: string;
+  actors: string[];
+}
+
+/**
+ * 净化 AI digest：summary 取字符串；ledger 条目限 8 条、type 白名单（非法归 event）、
+ * content 必须非空、actors 只留字符串。绝不抛错——坏 JSON 最多得到空结果。
+ */
+export function sanitizeDigest(obj: unknown): { summary: string; ledger: DigestLedgerItem[] } {
+  const o = (obj ?? {}) as Record<string, unknown>;
+  const summary = typeof o.summary === "string" ? o.summary.trim() : "";
+  const raw = Array.isArray(o.ledger) ? o.ledger : [];
+  const ledger: DigestLedgerItem[] = [];
+  for (const it of raw) {
+    const r = (it ?? {}) as Record<string, unknown>;
+    const content = typeof r.content === "string" ? r.content.trim() : "";
+    if (!content) continue;
+    const type = (LEDGER_TYPES as string[]).includes(String(r.type)) ? (r.type as LedgerType) : "event";
+    const actors = Array.isArray(r.actors)
+      ? r.actors.filter((a): a is string => typeof a === "string" && a.trim() !== "").slice(0, 8)
+      : [];
+    ledger.push({ type, content, actors });
+    if (ledger.length >= 8) break;
+  }
+  return { summary, ledger };
+}

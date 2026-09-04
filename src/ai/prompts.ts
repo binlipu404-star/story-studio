@@ -287,6 +287,29 @@ export function rollingSummaryPrompt(prevSummary: string, transcript: string): C
   ];
 }
 
+/**
+ * RP 剧场用：滚动摘要的同时抽取台账事实（自动台账捕获）。
+ * 与 rollingSummaryPrompt 同链路触发（历史折叠点），一次调用双产出。
+ */
+export function rollingDigestPrompt(prevSummary: string, transcript: string): ChatMessage[] {
+  return [
+    {
+      role: "system",
+      content: [
+        "你是角色扮演剧本的场记，做两件事：",
+        "① 摘要：把【旧摘要】与【新增情】合并成一条新摘要（300 字内；只保人物关系变化/关键道具去向/地点与世界状态/未回收悬念，只记事实不评论）。",
+        '② 台账：从【新增情】中抽取值得写入正典台账的事实（≤8 条，宁缺毋滥）：type ∈ event|item|relation|foreshadow|worldstate；foreshadow 只用于伏笔的「回收」且写明收了什么；content 一句话写成「谁做了什么/什么变成了什么」；actors 列出相关角色与道具名。',
+        "严禁推断文本没有写到的事实，严禁把大纲计划当成已发生。",
+        '只输出 JSON：{"summary":"…","ledger":[{"type":"…","content":"…","actors":["…"]}]}',
+      ].join("\n"),
+    },
+    {
+      role: "user",
+      content: [`【旧摘要】\n${prevSummary.trim() || "（无）"}`, `【新增情】\n${transcript}`].join("\n\n"),
+    },
+  ];
+}
+
 // ---------- M4 过渡试跑闭环（导出到 ST / 导回回写） ----------
 
 export interface TrialContext {
