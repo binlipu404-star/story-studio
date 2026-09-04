@@ -9,14 +9,16 @@ import * as repos from "../store/repos";
 import { InterviewPage } from "./InterviewPage";
 import { OutlinePage } from "./OutlinePage";
 import { TrialPage } from "./TrialPage";
+import { LedgerPage } from "./LedgerPage";
 import { CastPage } from "./CastPage";
 import { LorePage } from "./LorePage";
 
-type WsTab = "interview" | "outline" | "trial" | "cast" | "lore";
+type WsTab = "interview" | "outline" | "trial" | "ledger" | "cast" | "lore";
 const WS_TABS: { id: WsTab; label: string }[] = [
   { id: "interview", label: "构思访谈" },
   { id: "outline", label: "大纲工作台" },
   { id: "trial", label: "ST 试跑" },
+  { id: "ledger", label: "台账" },
   { id: "cast", label: "人物卡" },
   { id: "lore", label: "世界书" },
 ];
@@ -211,6 +213,7 @@ function ProjectWorkspace({ project, onBack }: { project: Project; onBack: () =>
       {wsTab === "interview" && <InterviewPage projectId={project.id} />}
       {wsTab === "outline" && <OutlinePage projectId={project.id} />}
       {wsTab === "trial" && <TrialPage projectId={project.id} />}
+      {wsTab === "ledger" && <LedgerPage projectId={project.id} />}
       {wsTab === "cast" && <CastPage projectId={project.id} />}
       {wsTab === "lore" && <LorePage projectId={project.id} />}
     </div>

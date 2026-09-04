@@ -51,6 +51,7 @@ import {
   type OutlineStructure,
 } from "../ai/prompts";
 import { draftToBookScenes, outlineBookJson, type OutlineBookScene } from "../flow/outlinebook";
+import { ledgerFacts } from "../flow/snapshot";
 
 // ---------- 展示常量 ----------
 
@@ -367,7 +368,7 @@ export function OutlinePage({ projectId }: { projectId: string }) {
     const r = await runAI("共创访谈", (signal) =>
       chatJSON<unknown>(
         [
-          { role: "system", content: outlineCoachPrompt(project.bible.fields, draftNow) },
+          { role: "system", content: outlineCoachPrompt(project.bible.fields, draftNow, ledgerFacts(ledger, nodes)) },
           ...hist,
           { role: "user", content: text },
         ],
@@ -612,7 +613,7 @@ export function OutlinePage({ projectId }: { projectId: string }) {
       (n) => n.level === "scene" && (n.status === "tested" || n.status === "locked"),
     );
     const r = await runAI("下一幕提案", (signal) =>
-      chatJSON<unknown>(nextScenePrompt(spine, doneScenes, project.bible.fields, ledger), {
+      chatJSON<unknown>(nextScenePrompt(spine, doneScenes, project.bible.fields, ledger, ledgerFacts(ledger, nodes)), {
         role: "writer",
         signal,
       }),

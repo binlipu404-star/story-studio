@@ -374,6 +374,15 @@ export async function decide(
   return db.ledger.get(id);
 }
 
+/** 台账编辑：修正文/相关者（不动状态——裁决与修订分离）。 */
+export async function editLedger(
+  id: ID,
+  patch: { content?: string; actors?: string[] },
+): Promise<LedgerRecord | undefined> {
+  await db.ledger.update(id, patch);
+  return db.ledger.get(id);
+}
+
 // ============================================================
 // RP 会话
 // ============================================================

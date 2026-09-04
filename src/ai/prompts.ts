@@ -141,7 +141,11 @@ export const OUTLINE_COACH_SPEC =
  * 共创访谈系统提示词：每轮重建（内嵌最新草稿），对话历史按普通消息携带。
  * 粗放纪律：只谈整体大纲/剧情走向/细纲题目，节拍明确不在此产出。
  */
-export function outlineCoachPrompt(fields: BibleField[], draft: MasterOutlineJson | null): string {
+export function outlineCoachPrompt(
+  fields: BibleField[],
+  draft: MasterOutlineJson | null,
+  facts?: string,
+): string {
   return [
     "你是一位资深小说结构顾问，正通过轻松对话与作者一起搭建大纲：每轮问一个问题，同时更新大纲草稿。",
     "访谈纪律（粗放）：只谈三类大事——整体大纲（卷数与结构里程碑）、剧情走向（给出 2~3 个带冲突与代价的方向供作者挑选或混合）、细纲题目（章与幕的标题＋一句话戏剧目标）。",
@@ -156,6 +160,9 @@ export function outlineCoachPrompt(fields: BibleField[], draft: MasterOutlineJso
     "",
     "构思档案（访谈须以此为基础，不推翻作者已确认的设定）：",
     fieldsMarkdown(fields),
+    ...(facts && facts.trim()
+      ? ["", "已确认事实与欠账（硬约束：新剧情不得与之矛盾，欠账要留意回收）：", facts.trim()]
+      : []),
     "",
     "当前大纲草稿（null=尚未开搭；本轮请基于档案给出初稿并以一个问题开场）：",
     draft ? JSON.stringify(draft) : "null",
@@ -227,8 +234,16 @@ export function nextScenePrompt(
   doneScenes: OutlineNode[],
   fields: BibleField[],
   ledger?: LedgerRecord[],
+  /** 预生成的台账快照+伏笔欠账文本（flow/snapshot.ledgerFacts）；缺省时退回台账粗格式 */
+  facts?: string,
 ): ChatMessage[] {
   const confirmed = (ledger ?? []).filter((r) => r.status === "confirmed");
+  const factsBlock =
+    facts && facts.trim()
+      ? facts.trim()
+      : confirmed.length
+        ? "正典台账（已确认事实）：\n" + confirmed.map((r) => `- [${r.type}] ${r.content}`).join("\n")
+        : "";
   return [
     {
       role: "system",
@@ -247,7 +262,7 @@ export function nextScenePrompt(
         spine.map((n) => nodeDigest(n)).join("\n") || "（尚无总纲）",
         "已上演（按序）：",
         doneScenes.map((n) => nodeDigest(n, { withBeats: true })).join("\n") || "（还没有演过的幕）",
-        confirmed.length ? "正典台账（已确认事实）：\n" + confirmed.map((r) => `- [${r.type}] ${r.content}`).join("\n") : "",
+        factsBlock,
       ]
         .filter(Boolean)
         .join("\n"),
