@@ -264,8 +264,8 @@ function ProjectWorkspace({ project, onBack }: { project: Project; onBack: () =>
       </div>
       {wsTab === "interview" && <InterviewPage projectId={project.id} />}
       {wsTab === "outline" && <OutlinePage projectId={project.id} />}
-      {wsTab === "theater" && <TheaterPage projectId={project.id} />}
-      {wsTab === "trial" && <TrialPage projectId={project.id} />}
+      {wsTab === "theater" && <TheaterPage projectId={project.id} onGoTab={(t) => setWsTab(t)} />}
+      {wsTab === "trial" && <TrialPage projectId={project.id} onGoTab={(t) => setWsTab(t)} />}
       {wsTab === "ledger" && <LedgerPage projectId={project.id} />}
       {wsTab === "cast" && <CastPage projectId={project.id} />}
       {wsTab === "lore" && <LorePage projectId={project.id} />}

@@ -1,10 +1,10 @@
 // ============================================================
-// story-studio M4 — ST 过渡试跑闭环页
-// 流程：选幕 → ①buildTrialPack 生成试跑包（card/greeting/note/readme[/worldbook]，
-//        逐文件下载/复制，落盘位置由用户定）→ 去 SillyTavern 演这一幕 →
-//      ②导入 ST 导出的 .jsonl/.json → parseStChat → toTranscript →
-//        sessionRecapPrompt + chatJSON(analyzer) 得到 RecapResult →
-//      动作四件套：保存会话 / 应用节拍标记 / 反向修纲草案 / 采纳台账提案。
+// story-studio M4 — ST 往返专页（导包 / 导回复盘）
+// 分工：站内开聊归「RP 剧场」（含纠偏与自动台账）；本页只做 ST 生态往返——
+//   选幕 → ①buildTrialPack 生成试跑包（card/greeting/note/readme[/worldbook]）→
+//   去 SillyTavern 演 → ②导回 .jsonl/.json（或从剧场「带回复盘」自动送达）→
+//   parseStChat → sessionRecapPrompt 复盘 → 动作四件套：
+//   保存会话 / 应用节拍标记 / 反向修纲草案 / 采纳台账提案；偏差可「移交剧场纠偏」。
 // 页面只经 store/repos 门面读写数据；类型只 import type 自 core/types。
 // ============================================================
 import { useCallback, useEffect, useMemo, useRef, useState, type ChangeEvent } from "react";
@@ -28,11 +28,8 @@ import {
   sceneSequence,
   type RecapResult,
 } from "../flow/outline";
-import { buildTrialPack, synthesizeNarratorCard, type TrialPack } from "../flow/trialpack";
-import type { RpSetup, RpTurn } from "../flow/rp";
-import { composeAuthorNote } from "../flow/rp";
-import { ledgerFacts } from "../flow/snapshot";
-import { RpRunner } from "../components/RpRunner";
+import { buildTrialPack, type TrialPack } from "../flow/trialpack";
+import { putHandoff, takeHandoff, type RecapHandoff } from "../flow/handoff";
 import { exportCardV2 } from "../st/card";
 import { exportLorebookGlobal } from "../st/lorebook";
 import { parseStChat, toStChatJsonl, toTranscript, type ParsedChatMessage } from "../st/chatlog";
@@ -109,7 +106,14 @@ async function copyToClipboard(text: string): Promise<boolean> {
 // ============================================================
 // 主组件
 // ============================================================
-export function TrialPage({ projectId }: { projectId: string }) {
+export function TrialPage({
+  projectId,
+  onGoTab,
+}: {
+  projectId: string;
+  /** 跨页签跳转（纠偏移交/续写 → RP 剧场） */
+  onGoTab: (tab: "theater" | "trial") => void;
+}) {
   // ---- 数据底 ----
   const [project, setProject] = useState<Project | undefined>(undefined);
   const [nodes, setNodes] = useState<OutlineNode[]>([]);
@@ -117,11 +121,6 @@ export function TrialPage({ projectId }: { projectId: string }) {
   const [loreEntries, setLoreEntries] = useState<LoreEntry[]>([]);
   const [sessions, setSessions] = useState<RPSession[]>([]);
   const [personas, setPersonas] = useState<Persona[]>([]);
-  /** 已确认台账（正典事实）：站内 RP 的组装管线注入快照+伏笔欠账 */
-  const [ledgerRecs, setLedgerRecs] = useState<LedgerRecord[]>([]);
-  /** 站内 RP 的工作会话：每幕一条 testing，随聊天自动落库（刷新可续写） */
-  const [rpSession, setRpSession] = useState<RPSession | null>(null);
-  const rpSessionRef = useRef<RPSession | null>(null);
   const [loaded, setLoaded] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
 
@@ -139,8 +138,6 @@ export function TrialPage({ projectId }: { projectId: string }) {
   const [packLeadLabel, setPackLeadLabel] = useState("");
   const [packError, setPackError] = useState<string | null>(null);
   const [copyMsg, setCopyMsg] = useState<string | null>(null);
-  /** 生成试跑包的同时快照的站内 RP 装配（存在 = 可以不开 ST 直接聊） */
-  const [rpSetup, setRpSetup] = useState<RpSetup | null>(null);
 
   // ---- 步骤2：导回与分析 ----
   const [parsed, setParsed] = useState<ParsedChatMessage[] | null>(null);
@@ -154,22 +151,20 @@ export function TrialPage({ projectId }: { projectId: string }) {
   const [beatMsg, setBeatMsg] = useState<string | null>(null);
   const [reweaveText, setReweaveText] = useState("");
   const [proposalMsg, setProposalMsg] = useState<string | null>(null);
-  /** N3：注入站内 RP 的纠偏指令列表（最新在后，最多保留 3 条） */
-  const [corrections, setCorrections] = useState<string[]>([]);
+  /** 拟好的纠偏文字：移交到 RP 剧场注入（列表与注入生效都在剧场侧） */
   const [correctionText, setCorrectionText] = useState("");
   /** 应用节拍标记后：本幕是否已全拍完成（可锁定） */
   const [playedDone, setPlayedDone] = useState(false);
 
   const refresh = useCallback(async () => {
     try {
-      const [proj, nd, ch, lore, ss, ps, led] = await Promise.all([
+      const [proj, nd, ch, lore, ss, ps] = await Promise.all([
         repos.getProject(projectId),
         repos.listNodes(projectId),
         repos.listCharacters(projectId),
         repos.listLoreEntries(projectId),
         repos.listSessions(projectId),
         repos.listPersonas(),
-        repos.listLedger(projectId, "confirmed"),
       ]);
       setProject(proj);
       setNodes(nd);
@@ -177,7 +172,6 @@ export function TrialPage({ projectId }: { projectId: string }) {
       setLoreEntries(lore);
       setSessions(ss);
       setPersonas(ps);
-      setLedgerRecs(led);
       // 载入后一次性：有默认画像且当前未选 → 套用（此后不再覆盖用户的选择，含手选的「不设画像」）
       if (!personaDefaultApplied.current) {
         personaDefaultApplied.current = true;
@@ -220,7 +214,6 @@ export function TrialPage({ projectId }: { projectId: string }) {
     setPackLeadLabel("");
     setPackError(null);
     setCopyMsg(null);
-    setRpSetup(null);
     setParsed(null);
     setRecap(null);
     setChecked([]);
@@ -229,11 +222,8 @@ export function TrialPage({ projectId }: { projectId: string }) {
     setBeatMsg(null);
     setReweaveText("");
     setProposalMsg(null);
-    setCorrections([]);
     setCorrectionText("");
     setPlayedDone(false);
-    setRpSession(null);
-    rpSessionRef.current = null;
   };
 
   const selectScene = (id: string) => {
@@ -248,7 +238,6 @@ export function TrialPage({ projectId }: { projectId: string }) {
     setPack(null);
     setPackLeadLabel("");
     setCopyMsg(null);
-    setCorrections([]);
     setCorrectionText("");
     setPlayedDone(false);
     if (!scene) {
@@ -296,49 +285,6 @@ export function TrialPage({ projectId }: { projectId: string }) {
         worldview,
         lorebookJson: enabled.length > 0 ? exportLorebookGlobal(enabled) : undefined,
       });
-      // 同步快照站内 RP 装配：与导出包同源（主演卡 / 合成旁白卡），保证两条路径一致
-      let rp: RpSetup;
-      if (leadChar) {
-        rp = {
-          charName: leadChar.name || "角色",
-          userName: uname,
-          description: [
-            leadChar.profile.appearance.trim() ? `外貌：${leadChar.profile.appearance.trim()}` : "",
-            leadChar.profile.background,
-          ]
-            .filter(Boolean)
-            .join("\n"),
-          personality: leadChar.profile.personality || undefined,
-          scenario: leadChar.scenario || undefined,
-          exampleDialogue: leadChar.profile.exampleLines.join("\n") || undefined,
-          personaBlock: persona ? personaPromptBlock(persona) : undefined,
-          authorNote: built.authorNote,
-          loreEntries: enabled,
-          loreSettings: project?.lorebook ?? { scanDepth: 2, tokenBudget: 2048, recursiveScanning: true },
-        };
-      } else {
-        const narrator = synthesizeNarratorCard({ scene, chapter, castNames, worldview }, built.greeting);
-        const nd = (narrator as { data?: Record<string, unknown> }).data ?? {};
-        rp = {
-          charName: typeof nd.name === "string" && nd.name ? nd.name : "旁白",
-          userName: uname,
-          description: typeof nd.description === "string" ? nd.description : "",
-          scenario: typeof nd.scenario === "string" ? nd.scenario || undefined : undefined,
-          personaBlock: persona ? personaPromptBlock(persona) : undefined,
-          authorNote: built.authorNote,
-          loreEntries: enabled,
-          loreSettings: project?.lorebook ?? { scanDepth: 2, tokenBudget: 2048, recursiveScanning: true },
-        };
-      }
-      setRpSetup({
-        ...rp,
-        ledgerBlock: ledgerFacts(ledgerRecs, nodes) || undefined,
-      });
-      // 本幕已有 testing 会话 → 挂回工作会话（RpRunner 恢复旧对话续写）
-      const prior =
-        sessions.find((s) => (s.nodeId ?? null) === scene.id && s.status === "testing" && s.messages.length > 0) ?? null;
-      rpSessionRef.current = prior;
-      setRpSession(prior);
       setPackLeadLabel(
         `${leadChar ? `主演：${leadChar.name || "（无名）"}` : "主演：旁白卡（无卡模式）"}` +
           `｜玩家画像：${persona ? persona.name || "（未命名）" : "（未设）"}`,
@@ -374,60 +320,6 @@ export function TrialPage({ projectId }: { projectId: string }) {
     }
   };
 
-  /** 站内试跑「带回复盘」：RpRunner 回合 → ParsedChatMessage，走同一条复盘流水线 */
-  const onBringBackFromRp = (rpTurns: RpTurn[]) => {
-    if (!scene) {
-      setPackError("请先选择要试跑的幕。");
-      return;
-    }
-    const msgs: ParsedChatMessage[] = rpTurns.map((t) => ({
-      name: t.name,
-      content: t.content,
-      isUser: t.role === "user",
-      role: t.role,
-    }));
-    if (msgs.length === 0) return;
-    setImportError(null);
-    void runRecap(scene, msgs);
-  };
-
-  /** 站内 RP 稳定落定 → 自动落库本幕工作会话（testing；刷新/换页后可续写） */
-  const onRpPersist = async (rturns: RpTurn[], sum: string) => {
-    if (!scene) return;
-    try {
-      const base = rpSessionRef.current;
-      const now = Date.now();
-      const createdAt = base?.createdAt ?? now;
-      const messages: RPMessage[] = rturns.map((t, i) => ({
-        id: base?.messages[i]?.id ?? `${createdAt}-${i}`,
-        role: t.role,
-        name: t.name,
-        content: t.content,
-        createdAt: createdAt + i,
-      }));
-      const cast = [...scene.cast];
-      if (leadChar && !cast.includes(leadChar.id)) cast.push(leadChar.id);
-      const row: RPSession = {
-        id: base?.id ?? repos.uid(),
-        projectId,
-        nodeId: scene.id,
-        cast,
-        userName: rpSetup?.userName ?? persona?.name?.trim() ?? loadAppConfig().userName,
-        messages,
-        ...(sum ? { rollingSummary: sum } : {}),
-        status: base?.status === "canon" ? "canon" : "testing",
-        createdAt,
-        updatedAt: now,
-      };
-      const saved = await repos.saveSession(row);
-      rpSessionRef.current = saved;
-      setRpSession(saved);
-      setSessions((prev) => [saved, ...prev.filter((s) => s.id !== saved.id)]);
-    } catch {
-      // 静默：持久化失败不打断聊天（本回合仍在屏上）
-    }
-  };
-
   /** 本幕全部落库会话（listSessions 已按 updatedAt 倒序） */
   const sceneSessions = useMemo(() => (scene ? sessions.filter((s) => (s.nodeId ?? null) === scene.id) : []), [sessions, scene]);
 
@@ -435,26 +327,10 @@ export function TrialPage({ projectId }: { projectId: string }) {
     try {
       const saved = await repos.saveSession({ ...s, status });
       setSessions((prev) => [saved, ...prev.filter((x) => x.id !== saved.id)]);
-      if (rpSessionRef.current?.id === s.id) {
-        rpSessionRef.current = saved;
-        setRpSession(saved);
-      }
     } catch (e) {
       setImportError(`更新会话状态失败：${errMsg(e)}`);
     }
   };
-
-  /** RpRunner 重挂载令牌：只在显式「续写」/换场时递增（自动落库不打断聊天） */
-  const [rpMountKey, setRpMountKey] = useState(0);
-
-  /** 传给 RpRunner 的恢复态（仅当本幕有已落库对话时） */
-  const rpInitial =
-    rpSession && rpSession.messages.length > 0
-      ? {
-          turns: rpSession.messages.map((m) => ({ role: m.role, name: m.name, content: m.content })),
-          summary: rpSession.rollingSummary ?? "",
-        }
-      : null;
 
   // ---------- 步骤3：导入试跑记录 → AI 复盘 ----------
 
@@ -506,8 +382,10 @@ export function TrialPage({ projectId }: { projectId: string }) {
       }));
       const cast = [...scene.cast];
       if (leadChar && !cast.includes(leadChar.id)) cast.push(leadChar.id);
+      // 本幕已有 testing 工作会话（多为 RP 剧场落库）→ 复盘保存更新同一条，不产生重复行
+      const base = sessions.find((s) => (s.nodeId ?? null) === scene.id && s.status === "testing" && s.messages.length > 0);
       const session: RPSession = {
-        id: rpSessionRef.current?.id ?? repos.uid(), // 站内聊过 → 复盘保存更新同一条工作会话
+        id: base?.id ?? repos.uid(),
         projectId,
         nodeId: scene.id,
         cast,
@@ -520,13 +398,43 @@ export function TrialPage({ projectId }: { projectId: string }) {
       };
       const saved = await repos.saveSession(session);
       setSavedSession(saved);
-      rpSessionRef.current = saved;
-      setRpSession(saved);
       setSessions((prev) => [saved, ...prev.filter((s) => s.id !== saved.id)]);
     } catch (e) {
       setImportError(`保存会话失败：${errMsg(e)}`);
     }
   };
+
+  // ---------- RP 剧场「带这些对话去复盘」→ 送达本页自动复盘（每次挂载至多一次） ----------
+  const recapHandoffDone = useRef(false);
+  useEffect(() => {
+    if (!loaded || recapHandoffDone.current) return;
+    recapHandoffDone.current = true;
+    const h = takeHandoff("recap", projectId) as RecapHandoff | null;
+    if (!h) return;
+    setSceneId(h.nodeId);
+    void (async () => {
+      try {
+        const [nd, ss] = await Promise.all([repos.listNodes(projectId), repos.listSessions(projectId)]);
+        setNodes(nd);
+        setSessions(ss);
+        const target = nd.find((n) => n.id === h.nodeId && n.level === "scene");
+        if (!target) {
+          setImportError("剧场要送去复盘的幕已不存在（可能被删除）。");
+          return;
+        }
+        const s =
+          (h.sessionId ? ss.find((x) => x.id === h.sessionId) : undefined) ??
+          ss.find((x) => (x.nodeId ?? null) === h.nodeId && x.status === "testing" && x.messages.length > 0);
+        if (!s) {
+          setImportError("找不到剧场移交的对话会话（可能还没有落库的回合）。");
+          return;
+        }
+        await runRecap(target, s.messages.map((m) => ({ name: m.name, content: m.content, isUser: m.role === "user", role: m.role })));
+      } catch (e) {
+        setImportError(`复盘交接载入失败：${errMsg(e)}`);
+      }
+    })();
+  }, [loaded, projectId]);
 
   // ---------- 动作：应用节拍标记 ----------
 
@@ -567,27 +475,21 @@ export function TrialPage({ projectId }: { projectId: string }) {
       const beats = reweaveBeats(scene, recap);
       patchNode(await repos.updateNode(scene.id, { beats }));
       setBeatMsg(
-        `反向修纲草案已落库（共 ${beats.length} 拍）。注意：落的是系统草案原文，框内手改不生效（未实现），请去大纲工作台精修。站内 RP 若正开着：重新点「生成试跑包」即可让新细纲生效（旧对话会自动恢复接写）。`,
+        `反向修纲草案已落库（共 ${beats.length} 拍）。注意：落的是系统草案原文，框内手改不生效（未实现），请去大纲工作台精修。改纲后去「RP 剧场」重开本幕即可让新细纲生效（greeting 重生成；旧对话仍在会话里可查）。`,
       );
     } catch (e) {
       setImportError(`反向修纲落库失败：${errMsg(e)}`);
     }
   };
 
-  // ---------- 动作：注入纠偏继续站内演（N3 中间路） ----------
+  // ---------- 动作：把纠偏文字移交 RP 剧场注入（站内开聊已归剧场） ----------
 
-  const injectCorrection = () => {
+  const handoffCorrection = () => {
     const text = correctionText.trim();
-    if (!text) return;
-    if (!pack || !rpSetup) {
-      setProposalMsg("当前没有站内 RP 会话可注入：先生成试跑包（导回 ST 记录走不了这条路，请把纠偏手工贴进 ST 的 author's note）。");
-      return;
-    }
-    const next = [...corrections, text].slice(-3);
-    setCorrections(next);
-    setRpSetup({ ...rpSetup, authorNote: composeAuthorNote(pack.authorNote, next) });
+    if (!text || !scene) return;
+    putHandoff({ kind: "correction", projectId, text });
     setCorrectionText("");
-    setProposalMsg(`纠偏已注入（在场 ${next.length} 条，超三条自动退旧）：下一句回复起生效，对话上下文完整保留。`);
+    onGoTab("theater");
   };
 
   const lockScene = async () => {
@@ -720,6 +622,7 @@ export function TrialPage({ projectId }: { projectId: string }) {
           </label>
         </div>
         <p className="muted">
+          本页只管 SillyTavern 往返。想在站内直接演这一幕（不导包不开酒馆）→ 用「RP 剧场」页签：同一套组装还多带台账快照与自动台账。
           启用（enabled）的世界书词条会作为「导入卡片附带世界书」打包：有则随包出 worldbook.json
           （ST 全局 world info 形态，在世界书面板导入）；蓝灯（constant）词条同时注入 greeting 的「世界设定摘录」。
           greeting 贴到角色卡开场白，note.txt 贴 author&apos;s note（note-depth 1），照 readme.md 操作即可开演。
@@ -754,31 +657,13 @@ export function TrialPage({ projectId }: { projectId: string }) {
         )}
       </section>
 
-      {/* ---------- 步骤2：站内试跑（无需 ST） ---------- */}
-      {pack && rpSetup && (
-        <section className="panel">
-          <h3>② 站内试跑（推荐：不必导出 ST，直接开聊）</h3>
-          <RpRunner
-            key={`${scene?.id ?? "x"}-${rpMountKey}`}
-            setup={rpSetup}
-            charName={rpSetup.charName}
-            userName={rpSetup.userName}
-            sceneLabel={pack.folder}
-            greeting={pack.greeting}
-            initial={rpInitial}
-            onPersist={(t, s) => void onRpPersist(t, s)}
-            onBringBack={onBringBackFromRp}
-          />
-        </section>
-      )}
-
-      {/* ---------- 本幕会话管理（N2：持久化/回放/状态） ---------- */}
+      {/* ---------- 本幕会话管理（N2：持久化/回放/状态；站内开聊在 RP 剧场） ---------- */}
       {scene && (
         <section className="panel">
           <h3>本幕会话（{sceneSessions.length}）</h3>
           <p className="muted" style={{ fontSize: 12 }}>
-            站内试跑每稳定落定一条就自动落库为本幕工作会话（status=testing），刷新/换页后可「续写」。
-            复盘保存会更新同一条。标记「正典」后不再被默认续写选中。
+            RP 剧场每稳定落定一条就自动落库为本幕工作会话（status=testing）；本页复盘保存会更新同一条。
+            标记「正典」后不再被默认续写选中。
           </p>
           {sceneSessions.length === 0 && <p className="muted">尚无落库会话。</p>}
           {sceneSessions.map((s) => (
@@ -799,18 +684,21 @@ export function TrialPage({ projectId }: { projectId: string }) {
                 <span className="muted" style={{ fontSize: 12 }}>
                   {s.messages.length} 条 · 更新 {new Date(s.updatedAt).toLocaleString()}
                   {s.rollingSummary ? ` · 前情摘要 ${s.rollingSummary.length} 字` : ""}
-                  {rpSession?.id === s.id ? " · 当前续写中" : ""}
                 </span>
                 <button
+                  title="到 RP 剧场接着这条会话演（自动选幕选卡并开台）"
                   onClick={() => {
-                    rpSessionRef.current = s;
-                    setRpSession(s);
-                    setRpMountKey((k) => k + 1);
-                    if (!pack) setPackError("先「生成试跑包」，然后这里点「续写」即可接着聊。");
+                    putHandoff({
+                      kind: "theater",
+                      projectId,
+                      nodeId: (s.nodeId ?? scene.id) as string,
+                      charHint: [...s.messages].reverse().find((m) => m.role === "char")?.name,
+                      auto: true,
+                    });
+                    onGoTab("theater");
                   }}
-                  disabled={rpSession?.id === s.id}
                 >
-                  续写
+                  续写（去剧场）
                 </button>
                 <button
                   title="导出 ST chat .jsonl：可直接送 st-novel-tool 小说化，或导回本页复现"
@@ -951,28 +839,20 @@ export function TrialPage({ projectId }: { projectId: string }) {
               </>
             )}
 
-            {/* N3：注入纠偏继续站内演（复盘后即可用，不必等有登记的偏差） */}
+            {/* N3→剧场化：纠偏文字移交「RP 剧场」注入（站内开聊已归剧场） */}
             <div className="panel" style={{ marginTop: 8 }}>
               <label className="field">
-                <span>注入纠偏，继续站内演（写进 author's note 区，下一句起生效；只影响站内 RP，ST 侧需手工贴）</span>
+                <span>纠偏（拟好后可移交「RP 剧场」注入 author's note 继续演；ST 侧仍需手工贴 note）</span>
                 <textarea rows={2} value={correctionText} onChange={(e) => setCorrectionText(e.target.value)} style={{ width: "100%" }} placeholder="例：薇薇安尚未察觉地窖钥匙，别让她的反应提前暴露这一点……" />
               </label>
               <div className="row" style={{ marginTop: 4 }}>
-                <button className="primary" onClick={injectCorrection} disabled={!correctionText.trim() || !pack || !rpSetup}>
-                  🎯 注入并继续演
+                <button className="primary" onClick={handoffCorrection} disabled={!correctionText.trim() || !scene}>
+                  → 移交 RP 剧场注入
                 </button>
-                {corrections.length > 0 && (
-                  <button
-                    onClick={() => {
-                      setCorrections([]);
-                      if (pack && rpSetup) setRpSetup({ ...rpSetup, authorNote: composeAuthorNote(pack.authorNote, []) });
-                    }}
-                  >
-                    清空在场纠偏（{corrections.length}）
-                  </button>
-                )}
+                <span className="muted" style={{ fontSize: 12 }}>
+                  跳转后自动预填，剧场里点「注入纠偏」才生效（最多在场 3 条，超了退旧）。
+                </span>
               </div>
-              {!pack && <p className="muted" style={{ fontSize: 12 }}>站内 RP 未开启时此按钮不可用（ST 路径请把纠偏文字贴进 ST 的 author's note）。</p>}
             </div>
 
             {(recap.proposals ?? []).length > 0 && (

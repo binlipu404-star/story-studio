@@ -12,7 +12,9 @@ import * as repos from "../store/repos";
 import { lineageOf, sceneSequence } from "../flow/outline";
 import { buildTrialPack, synthesizeNarratorCard } from "../flow/trialpack";
 import type { RpSetup, RpTurn } from "../flow/rp";
+import { composeAuthorNote } from "../flow/rp";
 import { ledgerFacts, foreshadowDebt, sanitizeDigest, type DigestLedgerItem } from "../flow/snapshot";
+import { putHandoff, takeHandoff, type CorrectionHandoff, type TheaterHandoff } from "../flow/handoff";
 import { rollingDigestPrompt, personaPromptBlock } from "../ai/prompts";
 import { chatJSON } from "../ai/client";
 import { loadAppConfig } from "../ai/config";
@@ -25,7 +27,14 @@ function errMsg(e: unknown): string {
 
 const NONE_CARD_ID = "__none__";
 
-export function TheaterPage({ projectId }: { projectId: string }) {
+export function TheaterPage({
+  projectId,
+  onGoTab,
+}: {
+  projectId: string;
+  /** 跨页签跳转（带对话去复盘 → ST 试跑） */
+  onGoTab: (tab: "theater" | "trial") => void;
+}) {
   // ---- 数据 ----
   const [project, setProject] = useState<Project | null>(null);
   const [nodes, setNodes] = useState<OutlineNode[]>([]);
@@ -44,13 +53,16 @@ export function TheaterPage({ projectId }: { projectId: string }) {
   const personaDefaultApplied = useRef(false);
 
   // ---- 场上 ----
-  const [rp, setRp] = useState<{ setup: RpSetup; greeting: string; folder: string } | null>(null);
+  const [rp, setRp] = useState<{ setup: RpSetup; greeting: string; folder: string; baseNote: string } | null>(null);
   const [startError, setStartError] = useState<string | null>(null);
   const [rpSession, setRpSession] = useState<RPSession | null>(null);
   const rpSessionRef = useRef<RPSession | null>(null);
   const [rpMountKey, setRpMountKey] = useState(0);
   const [captureMsg, setCaptureMsg] = useState<string | null>(null);
   const [settleBusy, setSettleBusy] = useState(false);
+  /** 纠偏：author's note 基底 + 在场指令（最新在后，最多 3 条） */
+  const [corrections, setCorrections] = useState<string[]>([]);
+  const [correctionText, setCorrectionText] = useState("");
 
   const refresh = useCallback(async () => {
     try {
@@ -270,7 +282,8 @@ export function TheaterPage({ projectId }: { projectId: string }) {
         sessions.find((s) => (s.nodeId ?? null) === scene.id && s.status === "testing" && s.messages.length > 0) ?? null;
       rpSessionRef.current = prior;
       setRpSession(prior);
-      setRp({ setup, greeting: built.greeting, folder: built.folder });
+      setCorrections([]);
+      setRp({ setup, greeting: built.greeting, folder: built.folder, baseNote: built.authorNote });
       setRpMountKey((k) => k + 1);
     } catch (e) {
       setStartError(errMsg(e));
@@ -308,6 +321,84 @@ export function TheaterPage({ projectId }: { projectId: string }) {
       setCaptureMsg(`结算失败：${errMsg(e)}`);
     } finally {
       setSettleBusy(false);
+    }
+  };
+
+  // ---------- 页签交接（每次挂载至多一次）：会话「续写」→ 预选+自动开台；复盘「移交纠偏」→ 预填 ----------
+  const jumpApplied = useRef(false);
+  const pendingAutoStart = useRef<string | null>(null);
+  useEffect(() => {
+    if (!loaded || jumpApplied.current) return;
+    jumpApplied.current = true;
+    const th = takeHandoff("theater", projectId) as TheaterHandoff | null;
+    if (th) {
+      setSceneId(th.nodeId);
+      if (th.charHint) {
+        const hit = characters.find((c) => c.name === th.charHint);
+        setCharId(hit ? hit.id : NONE_CARD_ID); // 名字对不上卡则走旁白演绎（会话照旧恢复原文）
+      }
+      if (th.auto) pendingAutoStart.current = th.nodeId;
+      setCaptureMsg("由会话「续写」移交而来：已自动接上本幕落库的对话。");
+    }
+    const ch = takeHandoff("correction", projectId) as CorrectionHandoff | null;
+    if (ch) {
+      setCorrectionText(ch.text);
+      if (!th) setCaptureMsg("复盘移交的纠偏已预填：开台后点「注入纠偏」才生效（目前尚未注入）。");
+    }
+  }, [loaded, projectId, characters]);
+
+  // 交接的自动开台：等 scene/char 预选在新渲染里落地后再 start()
+  useEffect(() => {
+    const want = pendingAutoStart.current;
+    if (want && loaded && scene?.id === want && !rp) {
+      pendingAutoStart.current = null;
+      start();
+    }
+    // start 取当次渲染闭包（scene/charId/persona 均已就绪）
+  }, [loaded, scene, rp, charId]);
+
+  // ---------- 纠偏：基底+在场指令重建 author's note（下一句生效，不重挂载） ----------
+
+  const injectCorrection = () => {
+    const text = correctionText.trim();
+    if (!text) return;
+    if (!rp) {
+      setCaptureMsg("还没开台：先「开台」再注入纠偏。");
+      return;
+    }
+    const next = [...corrections, text].slice(-3);
+    setCorrections(next);
+    setRp({ ...rp, setup: { ...rp.setup, authorNote: composeAuthorNote(rp.baseNote, next) } });
+    setCorrectionText("");
+    setCaptureMsg(`纠偏已注入（在场 ${next.length} 条，超三条自动退旧）：下一句回复起生效，对话上下文完整保留。`);
+  };
+
+  const clearCorrections = () => {
+    if (!rp) return;
+    setCorrections([]);
+    setRp({ ...rp, setup: { ...rp.setup, authorNote: rp.baseNote } });
+    setCaptureMsg("已清空在场纠偏，author's note 恢复基底。");
+  };
+
+  // ---------- 带这些对话去复盘：落库 → 移交「ST 试跑」自动复盘 ----------
+
+  const bringBackToRecap = async (turns: RpTurn[]) => {
+    if (!scene) return;
+    if (turns.length === 0) {
+      setCaptureMsg("还没有对话可带走。");
+      return;
+    }
+    try {
+      await onPersist(turns, ""); // 确保屏上最新回合已落库（不改滚动摘要）
+      putHandoff({
+        kind: "recap",
+        projectId,
+        nodeId: scene.id,
+        ...(rpSessionRef.current ? { sessionId: rpSessionRef.current.id } : {}),
+      });
+      onGoTab("trial");
+    } catch (e) {
+      setCaptureMsg(`落库失败，未发送复盘：${errMsg(e)}`);
     }
   };
 
@@ -381,15 +472,31 @@ export function TheaterPage({ projectId }: { projectId: string }) {
             initial={rpInitial}
             onPersist={(t, s) => void onPersist(t, s)}
             onDigest={onDigestCapture}
-            onBringBack={() => void settleScene()}
+            onBringBack={(t) => void bringBackToRecap(t)}
           />
           <div className="row" style={{ marginTop: 8 }}>
             <button onClick={() => void settleScene()} disabled={settleBusy}>
               {settleBusy ? "结算中…" : "🧾 结算本场（抽取台账+更新前情）"}
             </button>
             <span className="muted" style={{ fontSize: 12 }}>
-              「带回复盘」按钮在本页等同结算：只抽事实不改大纲。
+              「带这些对话去复盘」= 落库后跳「ST 试跑」自动跑节拍命中判定/修纲/提案。
             </span>
+          </div>
+          <div className="field" style={{ marginTop: 8 }}>
+            <span>纠偏注入（写进 author&apos;s note 区，下一句起生效；站内生效，ST 侧需手工贴）</span>
+            <textarea
+              rows={2}
+              value={correctionText}
+              onChange={(e) => setCorrectionText(e.target.value)}
+              style={{ width: "100%" }}
+              placeholder="例：薇薇安尚未察觉地窖钥匙，别让她的反应提前暴露这一点……（复盘页移交的纠偏会自动预填在这里）"
+            />
+          </div>
+          <div className="row" style={{ marginTop: 4 }}>
+            <button className="primary" onClick={injectCorrection} disabled={!correctionText.trim() || !rp}>
+              🎯 注入纠偏
+            </button>
+            {corrections.length > 0 && <button onClick={clearCorrections}>清空在场纠偏（{corrections.length}）</button>}
           </div>
           {captureMsg && <p className="muted" style={{ fontSize: 12 }}>{captureMsg}</p>}
         </section>
