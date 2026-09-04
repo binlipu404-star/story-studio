@@ -335,8 +335,9 @@ export function TrialPage({ projectId }: { projectId: string }) {
 
   const markSessionStatus = async (s: RPSession, status: "canon" | "testing" | "abandoned") => {
     try {
-      const saved = await repos.saveSession({ ...s, status });
-      setSessions((prev) => [saved, ...prev.filter((x) => x.id !== saved.id)]);
+      // v3.1-⑥ 事务读-改-写：只叠 status，不拿渲染态整行覆盖（防回退并发写入）
+      const saved = await repos.updateSession(s.id, (cur) => ({ ...cur, status }));
+      if (saved) setSessions((prev) => [saved, ...prev.filter((x) => x.id !== saved.id)]);
     } catch (e) {
       setImportError(`更新会话状态失败：${errMsg(e)}`);
     }
@@ -394,21 +395,23 @@ export function TrialPage({ projectId }: { projectId: string }) {
       if (leadChar && !cast.includes(leadChar.id)) cast.push(leadChar.id);
       // 本幕已有 testing 工作会话（多为 RP 剧场落库）→ 复盘保存更新同一条，不产生重复行
       const base = sessions.find((s) => (s.nodeId ?? null) === scene.id && s.status === "testing" && s.messages.length > 0);
-      const session: RPSession = {
-        id: base?.id ?? repos.uid(),
+      const patch = {
         projectId,
         nodeId: scene.id,
         cast,
         userName: persona?.name?.trim() || "读者", // 与 greeting 注入 {{user}} 的名字保持一致（v3.1-⑤ 画像即用户名）
         messages,
         rollingSummary: recap?.summary,
-        status: "testing",
-        createdAt: now,
-        updatedAt: now,
+        status: "testing" as const,
       };
-      const saved = await repos.saveSession(session);
-      setSavedSession(saved);
-      setSessions((prev) => [saved, ...prev.filter((s) => s.id !== saved.id)]);
+      // 已有工作会话 → 事务内只叠这些字段（保留其余字段，不整行回退并发写入）；否则新建
+      const saved = base
+        ? await repos.updateSession(base.id, (cur) => ({ ...cur, ...patch }))
+        : await repos.saveSession({ id: repos.uid(), createdAt: now, ...patch, updatedAt: now });
+      if (saved) {
+        setSavedSession(saved);
+        setSessions((prev) => [saved, ...prev.filter((s) => s.id !== saved.id)]);
+      }
     } catch (e) {
       setImportError(`保存会话失败：${errMsg(e)}`);
     }

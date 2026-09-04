@@ -54,8 +54,9 @@ export interface RpRunnerProps {
   disabled?: boolean;
   /** 恢复既有会话（父层从 RPSession 还原；greeting 变化时生效一次） */
   initial?: { turns: RpTurn[]; summary: string } | null;
-  /** 每次稳定落定（流式结束/编辑/滑动/折叠）后回调，父层负责落库；allowClear=用户确认过的清空 */
-  onPersist?: (turns: RpTurn[], summary: string, allowClear?: boolean) => void;
+  /** 每次稳定落定（流式结束/编辑/滑动/折叠）后回调，父层负责落库；
+   *  allowClear=用户确认过的清空；allowFold=折叠摘要（守卫放行 + 折叠条存档） */
+  onPersist?: (turns: RpTurn[], summary: string, allowClear?: boolean, allowFold?: boolean) => void;
   /** v3.1-⑥ 流式期自动保存钩子（600ms 去抖半句 + pagehide 立即 flush；父层负责写库） */
   onAutosave?: (turns: RpTurn[], summary: string) => void;
   /** v3.1-③ 预算编辑即时回调（父层写房间 config + prefs；组件本身不再只存本地 state） */
@@ -110,7 +111,9 @@ export function RpRunner({ setup, charName, userName, sceneLabel, greeting, disa
   }, [onPersist]);
 
   // 换幕 / 重开：greeting 变则回到开场白；带 initial 则恢复旧对话续写
-  // v3.1-⑥ 防护：正在流式生成时不重挂（否则 greeting 微变会掐掉/覆盖进行中的半句）
+  // v3.1-⑥ 防护一：正在流式生成时不重挂（否则 greeting 微变会掐掉/覆盖进行中的半句）
+  // 防护二（M4）：非流式期 greeting 因场记写正典等微变时，若本地已有比 initial 更新
+  // 且尚未回灌的落定（id 集不等），跳过重灌——防旧渲染快照顶回刚做的编辑/删除。
   const prevGreetingRef = useRef(greeting);
   useEffect(() => {
     const greetingChanged = prevGreetingRef.current !== greeting;
@@ -121,6 +124,15 @@ export function RpRunner({ setup, charName, userName, sceneLabel, greeting, disa
       return;
     }
     const init = initialRef.current;
+    const settled = settledRef.current;
+    if (greetingChanged && settled) {
+      const localIds = settled.turns.map((t) => t.id).filter(Boolean).join(",");
+      const initIds = (init?.turns ?? []).map((t) => t.id).filter(Boolean).join(",");
+      if (localIds && localIds !== initIds) {
+        setNote("台面装配有变；本地对话与库内不一致，已保留本地现场（切房或换台可强制对齐）。");
+        return;
+      }
+    }
     if (init && init.turns.length > 0) {
       setTurns(init.turns.map((t) => (t.id ? t : { ...t, id: newTurnId() })));
       setSummary(init.summary || "");
@@ -143,9 +155,12 @@ export function RpRunner({ setup, charName, userName, sceneLabel, greeting, disa
 
   useEffect(() => () => ctrlRef.current?.abort(), []);
 
-  /** 稳定落定后通知父层落库（流式中间态不落，避免高频写）；allowClear=用户确认过的清空 */
-  const settle = useCallback((next: RpTurn[], sum: string, allowClear = false) => {
-    onPersistRef.current?.(next, sum, allowClear);
+  const settledRef = useRef<{ turns: RpTurn[]; summary: string; allowClear: boolean; allowFold: boolean } | null>(null);
+  /** 稳定落定后通知父层落库（流式中间态不落，避免高频写）；
+   *  allowClear=用户确认过的清空；allowFold=摘要折叠掉旧回合（守卫放行骤减，且父层把被折叠条落底存档） */
+  const settle = useCallback((next: RpTurn[], sum: string, allowClear = false, allowFold = false) => {
+    settledRef.current = { turns: next, summary: sum, allowClear, allowFold };
+    onPersistRef.current?.(next, sum, allowClear, allowFold);
   }, []);
   const assistantSettledRef = useRef(onAssistantSettled);
   useEffect(() => {
@@ -171,10 +186,6 @@ export function RpRunner({ setup, charName, userName, sceneLabel, greeting, disa
   useEffect(() => {
     autosaveRef.current = onAutosave;
   }, [onAutosave]);
-  const settledRef = useRef<{ turns: RpTurn[]; summary: string } | null>(initial ?? null);
-  useEffect(() => {
-    if (initial) settledRef.current = { turns: initial.turns, summary: initial.summary };
-  }, [initial]);
   const streamLiveRef = useRef<{ turns: RpTurn[]; summary: string } | null>(null);
   const autoTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const scheduleAutosave = useCallback(() => {
@@ -230,7 +241,8 @@ export function RpRunner({ setup, charName, userName, sceneLabel, greeting, disa
       setSummary(d.summary);
       setTurns(plan.keep);
       setAlts(null);
-      settle(plan.keep, d.summary);
+      // allowFold：旧回合进摘要＝设计内折叠（守卫放行），父层同时把折叠条存档留底
+      settle(plan.keep, d.summary, false, true);
       if (useDigest && d.ledger.length > 0) digestRef.current?.(d.ledger);
       setNote(
         `前情已折叠：${plan.rollup.length} 条旧回合 → 摘要 ${d.summary.length} 字` +
@@ -244,8 +256,11 @@ export function RpRunner({ setup, charName, userName, sceneLabel, greeting, disa
     }
   }, [settle]);
 
-  /** 以给定历史流式生成下一条 assistant 回复（regen=true 时结果作为新候选追加） */
-  const streamAssistant = useCallback(async (history: RpTurn[], regen = false) => {
+  /** 以给定历史流式生成下一条 assistant 回复（regen=true 时结果作为新候选追加；
+   *  preserve=regen 前的完整现场：M2——生成期 autosave 镜像钉在旧现场，
+   *  中途刷新/中止旧候选都不从库里消失，定稿才整列表覆盖） */
+  const streamAssistant = useCallback(
+    async (history: RpTurn[], regen = false, preserve?: RpTurn[]) => {
     const ctrl = new AbortController();
     ctrlRef.current = ctrl;
     setRunning(true);
@@ -260,25 +275,31 @@ export function RpRunner({ setup, charName, userName, sceneLabel, greeting, disa
     setLiveReasoning("");
     const newId = newTurnId(); // 本轮回复的稳定 id：半途落库与定稿同一 id，映射不错位
     setTurns([...history, { id: newId, role: "char", name: charName, content: "" }]);
-    streamLiveRef.current = { turns: [...history, { id: newId, role: "char", name: charName, content: "" }], summary: summaryRef.current };
-    scheduleAutosave();
+    if (regen && preserve) {
+      streamLiveRef.current = { turns: preserve, summary: summaryRef.current }; // 钉住旧现场（含旧候选）
+    } else {
+      streamLiveRef.current = { turns: [...history, { id: newId, role: "char", name: charName, content: "" }], summary: summaryRef.current };
+      scheduleAutosave();
+    }
     try {
       const out = await chat(asm.messages, {
         role: "writer",
         signal: ctrl.signal,
         onDelta: (d) => {
           acc += d;
-          streamLiveRef.current = {
-            turns: [...history, { id: newId, role: "char", name: charName, content: acc, ...(accReasoning.trim() ? { reasoning: accReasoning } : {}) }],
-            summary: summaryRef.current,
-          };
+          if (!(regen && preserve)) {
+            streamLiveRef.current = {
+              turns: [...history, { id: newId, role: "char", name: charName, content: acc, ...(accReasoning.trim() ? { reasoning: accReasoning } : {}) }],
+              summary: summaryRef.current,
+            };
+          }
           setTurns((prev) => {
             const cp = prev.slice();
             const last = cp[cp.length - 1];
             cp[cp.length - 1] = { ...last, content: last.content + d };
             return cp;
           });
-          scheduleAutosave();
+          if (!(regen && preserve)) scheduleAutosave();
         },
         onReasoning: (d) => {
           accReasoning += d;
@@ -300,7 +321,6 @@ export function RpRunner({ setup, charName, userName, sceneLabel, greeting, disa
         return content.trim() ? { list: [content], idx: 0 } : null;
       });
       settle(finalTurns, summaryRef.current);
-      settledRef.current = { turns: finalTurns, summary: summaryRef.current };
       assistantSettledRef.current?.(content, finalTurns.filter((t) => t.role === "user").length);
       // 自动滚动摘要：超阈值就折叠（analyzer 角色），失败不打断 RP
       const plan = planRollingSummary(finalTurns, { thresholdTokens: ROLL_THRESHOLD, keepTurns: ROLL_KEEP });
@@ -309,13 +329,17 @@ export function RpRunner({ setup, charName, userName, sceneLabel, greeting, disa
       const aborted = (e as { name?: string })?.name === "AbortError";
       // 收尾：半句保留（人工续写/删除），空占位移除；从本地累积量确定性重建，不读渲染态
       const halfReasoning = accReasoning.trim() || undefined;
-      const cp: RpTurn[] = acc.trim()
-        ? [...history, { id: newId, role: "char", name: charName, content: acc, ...(halfReasoning ? { reasoning: halfReasoning } : {}) }]
-        : history;
+      const regenAbort = regen && Boolean(preserve) && (!aborted || !acc.trim());
+      const cp: RpTurn[] = regenAbort && preserve
+        ? preserve // regen 中止/失败且没有可用的新半句 → 旧候选原地保留
+        : acc.trim()
+          ? [...history, { id: newId, role: "char", name: charName, content: acc, ...(halfReasoning ? { reasoning: halfReasoning } : {}) }]
+          : history;
       streamLiveRef.current = { turns: cp, summary: summaryRef.current };
       setTurns(cp);
       setLiveReasoning("");
       settle(cp, summaryRef.current);
+      if (regenAbort && preserve) setAlts((prev) => prev ?? { list: [preserve[preserve.length - 1].content], idx: 0 });
       if (!aborted) setError(errMsg(e));
     } finally {
       setRunning(false);
@@ -337,7 +361,7 @@ export function RpRunner({ setup, charName, userName, sceneLabel, greeting, disa
     let h = turns.slice();
     if (h.length && h[h.length - 1].role === "char") h.pop();
     if (!h.length) return;
-    void streamAssistant(h, true);
+    void streamAssistant(h, true, turns);
   };
 
   const swipe = (delta: number) => {
@@ -360,6 +384,8 @@ export function RpRunner({ setup, charName, userName, sceneLabel, greeting, disa
 
   const delLast = () => {
     if (running || turns.length <= 1) return;
+    // v3.1-⑥ 破坏性操作必须经用户确认（与逐条删除同款）
+    if (!window.confirm("删除最后一条消息？此操作会从对话历史中移除该条。")) return;
     mutateTurns(turns.slice(0, -1));
   };
 
@@ -543,10 +569,10 @@ export function RpRunner({ setup, charName, userName, sceneLabel, greeting, disa
           重生成（换候选）
         </button>
         <button onClick={delLast} disabled={disabled || running || turns.length <= 1}>删除末条</button>
-        <button onClick={manualRoll} disabled={!canRoll} title="把较早的对话折叠进前情摘要（省 token）">
+        <button onClick={manualRoll} disabled={disabled || !canRoll} title="把较早的对话折叠进前情摘要（省 token）">
           {rollBusy ? "折叠中…" : "🗜 压缩前情"}
         </button>
-        <button onClick={restart} disabled={running}>重新开始</button>
+        <button onClick={restart} disabled={disabled || running}>重新开始</button>
         <button onClick={() => setShowSys((v) => !v)}>
           {showSys ? "隐藏提示词" : "查看提示词"}
         </button>

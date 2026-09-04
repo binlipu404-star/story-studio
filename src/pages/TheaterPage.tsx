@@ -148,6 +148,37 @@ export function TheaterPage() {
   const [renameVal, setRenameVal] = useState("");
 
   // ------------------------------------------------------------
+  // v3.1-⑥ H2 双开防护：同房间跨页签互斥。
+  // 锁只在**同一个浏览器**的页签间互斥；拿到锁的页签可写，拿不到的整房只读
+  // （消息整列表 last-write-wins 是跨页签唯一没法用写链解决的数据竞争）。
+  // ------------------------------------------------------------
+  const [roomLocked, setRoomLocked] = useState(false);
+  useEffect(() => {
+    setRoomLocked(false);
+    if (!activeRoom || typeof navigator === "undefined" || !navigator.locks) return; // 不支持的浏览器：不拦（老行为）
+    let release: () => void = () => {};
+    let cancelled = false;
+    const held = new Promise<void>((res) => {
+      release = res;
+    });
+    void navigator.locks
+      .request(`ss-rp-room-${activeRoom.id}`, { ifAvailable: true }, async (lock) => {
+        if (!lock) {
+          if (!cancelled) setRoomLocked(true);
+          return; // 拿不到 → 立即归还（本来就没有）
+        }
+        await held; // 拿到了：一直持有到本房切走/卸载
+      })
+      .catch(() => {
+        /* 锁 API 异常不拦正常使用 */
+      });
+    return () => {
+      cancelled = true;
+      release();
+    };
+  }, [activeRoom?.id]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // ------------------------------------------------------------
   // 加载
   // ------------------------------------------------------------
   const refreshRooms = useCallback(async () => {
@@ -337,8 +368,13 @@ export function TheaterPage() {
       room.messages.map((m) => ({ role: m.role, name: m.name, content: m.content, createdAt: m.createdAt })),
     );
 
+  /** v3.1-⑥ 悬殊守卫：条数骤减超过 max(2, 半数) 即视为可疑整屏覆盖。
+   *  放行三种本意：allowClear（用户确认过的清空）、allowFold（摘要折叠，旧回合转存档）。 */
+  const suspiciousShrink = (base: RPSession, msgs: RPMessage[], allowClear: boolean, allowFold: boolean) =>
+    !allowClear && !allowFold && base.messages.length - msgs.length > Math.max(2, Math.floor(base.messages.length * 0.5));
+
   const persist = useCallback(
-    async (turns: RpTurn[], summary: string, allowClear = false) => {
+    async (turns: RpTurn[], summary: string, allowClear = false, allowFold = false) => {
       if (!activeRoom) return;
       const id = activeRoom.id;
       let due = false;
@@ -347,20 +383,21 @@ export function TheaterPage() {
       const saved = await queueRoomWrite(id, () =>
         repos.updateSession(id, (base) => {
           const msgs = turnsToMessages(turns, base.messages);
-          // v3.1-⑥ 悬殊守卫：条数骤减且非折叠（摘要没变长）且非用户确认的清空 → 拒写消息。
-          // 专防旧快照（切页前的陈旧现场）晚到覆盖新历史。
-          const shrinking = base.messages.length - msgs.length;
-          const folding = summary.length > (base.rollingSummary?.length ?? 0) + 80;
-          if (!allowClear && shrinking > Math.max(2, Math.floor(base.messages.length * 0.5)) && !folding) {
+          if (suspiciousShrink(base, msgs, allowClear, allowFold)) {
             guardHit = true;
-            return base; // 原样返回：只刷 updatedAt 都不必，整行不动
+            return base; // 整行不动：可疑的旧快照晚到不碰历史
           }
+          // 折叠留底：被摘要折叠掉的条按 id 找回来挪进存档，永不真删
+          const keptIds = new Set(msgs.map((m) => m.id));
+          const archived = (base.messagesArchive ?? []).filter((m) => !keptIds.has(m.id));
+          const rolled = base.messages.filter((m) => allowFold && !keptIds.has(m.id));
           const userFloors = msgs.filter((m) => m.role === "user").length;
           due = planLedgerCadence(userFloors - (base.config?.cadenceMark ?? 0), base.config?.ledgerCadence ?? 0);
           return {
             ...base,
             messages: msgs,
             rollingSummary: summary || undefined,
+            ...(archived.length || rolled.length ? { messagesArchive: [...archived, ...rolled] } : {}),
             ...(due && base.config ? { config: { ...base.config, cadenceMark: userFloors } } : {}),
           };
         }),
@@ -379,17 +416,18 @@ export function TheaterPage() {
     [activeRoom, assembly, queueRoomWrite],
   );
 
-  /** v3.1-⑥ 流式期自动保存：只落消息（含半句），不动 cadence/不触发场记；同样走链保序 */
+  /** v3.1-⑥ 流式期自动保存：只落消息（含半句），不动 cadence/不触发场记；
+   *  同样走链保序，且永远带悬殊守卫（autosave 没有任何清空的理由） */
   const autosave = useCallback(
     async (turns: RpTurn[], summary: string) => {
       if (!activeRoom) return;
       const id = activeRoom.id;
       const saved = await queueRoomWrite(id, () =>
-        repos.updateSession(id, (base) => ({
-          ...base,
-          messages: turnsToMessages(turns, base.messages),
-          rollingSummary: summary || undefined,
-        })),
+        repos.updateSession(id, (base) => {
+          const msgs = turnsToMessages(turns, base.messages);
+          if (suspiciousShrink(base, msgs, false, false)) return base;
+          return { ...base, messages: msgs, rollingSummary: summary || undefined };
+        }),
       );
       if (saved) setRooms((prev) => roomSort(prev.map((r) => (r.id === saved.id ? saved : r))));
     },
@@ -545,7 +583,13 @@ export function TheaterPage() {
 
   const deleteRoom = async (room: RPSession) => {
     if (!window.confirm(`删除房间「${room.name ?? room.id}」？其对话与房间正典（${room.id.slice(0, 6)}…绑定台账）一并删除，不可撤销。`)) return;
-    await repos.deleteSession(room.id); // 级联删 roomId 台账（repos 层保证）
+    // M5 留底：先自动导出一份 jsonl 落盘（磁盘旧快照不会被删，双保险）
+    try {
+      downloadText(roomFileName(room.name ?? "", room.id), exportJsonl(room, assembly?.setup.charName ?? "角色"));
+    } catch {
+      /* 留底失败不拦删除 */
+    }
+    await repos.deleteSession(room.id); // 级联删 roomId 台账（repos 层单事务保证）
     setRooms((prev) => prev.filter((r) => r.id !== room.id));
     if (activeId === room.id) setActiveId(rooms.find((r) => r.id !== room.id)?.id ?? "");
   };
@@ -557,10 +601,10 @@ export function TheaterPage() {
     setRenameId("");
   };
 
-  /** 列表上不依赖 activeRoom 的直改（重命名/标记等） */
+  /** 列表上不依赖 activeRoom 的直改（重命名/标记等）：走链 + 事务读-改-写，不碰在飞的消息 */
   const saveRoomDirect = async (room: RPSession, patch: Partial<RPSession>) => {
-    const saved = await repos.saveSession({ ...room, ...patch, updatedAt: Date.now() });
-    setRooms((prev) => roomSort(prev.map((r) => (r.id === saved.id ? saved : r))));
+    const saved = await queueRoomWrite(room.id, () => repos.updateSession(room.id, (cur) => ({ ...cur, ...patch })));
+    if (saved) setRooms((prev) => roomSort(prev.map((r) => (r.id === saved.id ? saved : r))));
   };
 
   const syncSnapshot = async () => {
@@ -887,6 +931,11 @@ export function TheaterPage() {
             </div>
 
             {note && <div className="panel" style={{ fontSize: 12 }}>{note} <button style={{ fontSize: 10 }} onClick={() => setNote(null)}>知道了</button></div>}
+            {roomLocked && (
+              <div className="panel" style={{ fontSize: 12, borderColor: "#e65100", color: "#e65100" }}>
+                🔒 这个房间正在<b>另一个标签页</b>里使用，本页已置为<b>只读</b>（两边同时聊会互相覆盖历史）。请回到那个标签页继续，或关掉它后重进本房间。
+              </div>
+            )}
 
             {/* 配置条：节奏 / 正典借用 / 场记开关 / 楼层定时 */}
             {activeRoom.config && (
@@ -937,7 +986,8 @@ export function TheaterPage() {
                         : null
                     }
                     initialBudget={{ budgetTokens: activeRoom.config?.budgetTokens ?? 8192, reserveTokens: activeRoom.config?.reserveTokens ?? 768 }}
-                    onPersist={(turns, summary) => void persist(turns, summary)}
+                    disabled={roomLocked}
+                    onPersist={(turns, summary, allowClear, allowFold) => void persist(turns, summary, allowClear, allowFold)}
                     onAutosave={(turns, summary) => void autosave(turns, summary)}
                     onBudgetChange={(b, r) => void saveRoom({ config: { ...activeRoom.config!, budgetTokens: b, reserveTokens: r } }).then(() => {
                       prefsRef.current = { ...prefsRef.current, budgetTokens: b, reserveTokens: r };

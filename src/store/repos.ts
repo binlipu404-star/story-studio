@@ -465,11 +465,12 @@ export async function getSession(id: ID): Promise<RPSession | undefined> {
   return db.sessions.get(id);
 }
 
-/** 删除会话（剧场房间删除；连带清掉该房间绑定的台账行，正典随房间消亡）。 */
+/** 删除会话（剧场房间删除；连带清掉该房间绑定的台账行，正典随房间消亡）。单事务原子。 */
 export async function deleteSession(id: ID): Promise<void> {
-  await db.sessions.delete(id);
-  const rows = await db.ledger.where("roomId").equals(id).toArray();
-  if (rows.length > 0) await db.ledger.bulkDelete(rows.map((r) => r.id));
+  await db.transaction("rw", [db.sessions, db.ledger], async () => {
+    await db.sessions.delete(id);
+    await db.ledger.where("roomId").equals(id).delete();
+  });
 }
 
 // ============================================================

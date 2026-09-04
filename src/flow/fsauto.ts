@@ -150,28 +150,40 @@ export class RoomDiskWriter {
       this.timer = null;
     }
     const items = [...this.pending.entries()];
+    if (items.length === 0) return;
     this.pending.clear();
     for (const [name, text] of items) {
-      this.chain = this.chain.then(() => this.doWrite(name, text)).catch(() => undefined);
+      this.chain = this.chain
+        .then(() => this.doWrite(name, text))
+        .then((ok) => {
+          // M6：写失败 → 回队 pending（期间来了更新快照则保新弃旧）；
+          // pick/reconnect 手势恢复后 flushNow 自动补写，快照不再静默丢失
+          if (!ok && !this.pending.has(name)) this.pending.set(name, text);
+        })
+        .catch(() => {
+          if (!this.pending.has(name)) this.pending.set(name, text);
+        });
     }
   }
 
-  private async doWrite(fileName: string, text: string): Promise<void> {
+  /** 返回是否已消费（false=写失败需回队重试；未连接目录视为无需写） */
+  private async doWrite(fileName: string, text: string): Promise<boolean> {
     if (this.dir === "unchecked") this.dir = await this.io.loadDir();
     const dir = this.dir;
-    if (!dir) return; // 没连目录：静默（导出仍可用）
+    if (!dir) return true; // 没连目录：静默（导出仍可用）
     try {
       const p = await dir.queryPermission({ mode: "readwrite" });
       if (p !== "granted") {
         // 不弹框（弹框要手势）：置状态，等用户点「重新连接」
         this.set({ connected: false, needsAction: "reauth", lastError: "写权限已过期，点「重新连接」恢复" });
-        return;
+        return false;
       }
       const fh = await dir.getFileHandle(fileName, { create: true });
       const w = await fh.createWritable(); // 默认截断替换；无需 truncate
       await w.write(text);
       await w.close(); // 不 close = 没落盘
       this.set({ connected: true, needsAction: "none", lastError: "", lastWriteAt: Date.now() });
+      return true;
     } catch (e) {
       const name = e instanceof Error ? e.name : "";
       const msg = e instanceof Error ? e.message : String(e);
@@ -184,6 +196,7 @@ export class RoomDiskWriter {
       } else {
         this.set({ lastError: `写入失败：${msg}` });
       }
+      return false;
     }
   }
 }

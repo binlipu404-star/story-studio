@@ -249,6 +249,8 @@ export interface RPSession {
   userName: string; // {{user}}
   messages: RPMessage[];
   rollingSummary?: string; // 远期记忆滚动摘要
+  /** v3.1-⑥ 折叠留底：被滚动摘要折叠掉的旧回合永不真删，只挪到这里（只增不读注入） */
+  messagesArchive?: RPMessage[];
   status: "testing" | "canon" | "abandoned";
   createdAt: number;
   updatedAt: number;
