@@ -348,3 +348,14 @@ export function turnsTranscript(turns: RpTurn[]): string {
     .map((t) => `${t.name}：${t.content.trim()}`)
     .join("\n\n");
 }
+
+/**
+ * 作者注释装配：base（试跑包 AN）+ 纠偏指令列表（最新在后）。
+ * N3「注入纠偏继续演」的纯逻辑核：调用方持有列表（限流如 slice(-3)），每次重建全量 AN，
+ * 不留字符串考古问题。
+ */
+export function composeAuthorNote(base: string | undefined, directives: string[]): string {
+  return [base?.trim() ?? "", ...directives.map((d) => (d.trim() ? `【纠偏】${d.trim()}` : ""))]
+    .filter(Boolean)
+    .join("\n\n");
+}

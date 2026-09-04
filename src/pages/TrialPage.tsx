@@ -30,6 +30,7 @@ import {
 } from "../flow/outline";
 import { buildTrialPack, synthesizeNarratorCard, type TrialPack } from "../flow/trialpack";
 import type { RpSetup, RpTurn } from "../flow/rp";
+import { composeAuthorNote } from "../flow/rp";
 import { ledgerFacts } from "../flow/snapshot";
 import { RpRunner } from "../components/RpRunner";
 import { exportCardV2 } from "../st/card";
@@ -153,6 +154,11 @@ export function TrialPage({ projectId }: { projectId: string }) {
   const [beatMsg, setBeatMsg] = useState<string | null>(null);
   const [reweaveText, setReweaveText] = useState("");
   const [proposalMsg, setProposalMsg] = useState<string | null>(null);
+  /** N3：注入站内 RP 的纠偏指令列表（最新在后，最多保留 3 条） */
+  const [corrections, setCorrections] = useState<string[]>([]);
+  const [correctionText, setCorrectionText] = useState("");
+  /** 应用节拍标记后：本幕是否已全拍完成（可锁定） */
+  const [playedDone, setPlayedDone] = useState(false);
 
   const refresh = useCallback(async () => {
     try {
@@ -223,6 +229,9 @@ export function TrialPage({ projectId }: { projectId: string }) {
     setBeatMsg(null);
     setReweaveText("");
     setProposalMsg(null);
+    setCorrections([]);
+    setCorrectionText("");
+    setPlayedDone(false);
     setRpSession(null);
     rpSessionRef.current = null;
   };
@@ -239,6 +248,9 @@ export function TrialPage({ projectId }: { projectId: string }) {
     setPack(null);
     setPackLeadLabel("");
     setCopyMsg(null);
+    setCorrections([]);
+    setCorrectionText("");
+    setPlayedDone(false);
     if (!scene) {
       setPackError("当前作品还没有可试跑的「幕」，请先在大纲工作台创建。");
       return;
@@ -530,10 +542,12 @@ export function TrialPage({ projectId }: { projectId: string }) {
         patchNode(await repos.setNodeStatus(scene.id, "tested"));
         statusNote = "节点状态已置「已试跑」";
       }
+      const allDone = beats.length > 0 && beats.every((b) => b.done);
+      setPlayedDone(allDone);
       setBeatMsg(
         `节拍标记已回写（${app.beatUpdates.length}/${beatCount} 拍有判定，命中率 ${
           app.hitRate === null ? "—" : `${Math.round(app.hitRate * 100)}%`
-        }；重大偏差 ${app.majorCount} 条），${statusNote}。`,
+        }；重大偏差 ${app.majorCount} 条），${statusNote}${allDone ? "；所有节拍已完成，可标记已演毕" : ""}。`,
       );
     } catch (e) {
       setImportError(`应用节拍标记失败：${errMsg(e)}`);
@@ -553,10 +567,37 @@ export function TrialPage({ projectId }: { projectId: string }) {
       const beats = reweaveBeats(scene, recap);
       patchNode(await repos.updateNode(scene.id, { beats }));
       setBeatMsg(
-        `反向修纲草案已落库（共 ${beats.length} 拍）。注意：落的是系统草案原文，框内手改不生效（未实现），请去大纲工作台精修。`,
+        `反向修纲草案已落库（共 ${beats.length} 拍）。注意：落的是系统草案原文，框内手改不生效（未实现），请去大纲工作台精修。站内 RP 若正开着：重新点「生成试跑包」即可让新细纲生效（旧对话会自动恢复接写）。`,
       );
     } catch (e) {
       setImportError(`反向修纲落库失败：${errMsg(e)}`);
+    }
+  };
+
+  // ---------- 动作：注入纠偏继续站内演（N3 中间路） ----------
+
+  const injectCorrection = () => {
+    const text = correctionText.trim();
+    if (!text) return;
+    if (!pack || !rpSetup) {
+      setProposalMsg("当前没有站内 RP 会话可注入：先生成试跑包（导回 ST 记录走不了这条路，请把纠偏手工贴进 ST 的 author's note）。");
+      return;
+    }
+    const next = [...corrections, text].slice(-3);
+    setCorrections(next);
+    setRpSetup({ ...rpSetup, authorNote: composeAuthorNote(pack.authorNote, next) });
+    setCorrectionText("");
+    setProposalMsg(`纠偏已注入（在场 ${next.length} 条，超三条自动退旧）：下一句回复起生效，对话上下文完整保留。`);
+  };
+
+  const lockScene = async () => {
+    if (!scene) return;
+    try {
+      patchNode(await repos.setNodeStatus(scene.id, "locked"));
+      setBeatMsg("本幕已标记「已锁定」：大纲改动会被工作台提示。剧情世界书导出时它按已演退场（以节拍完成为准）。");
+      setPlayedDone(false);
+    } catch (e) {
+      setImportError(`锁定失败：${errMsg(e)}`);
     }
   };
 
@@ -877,11 +918,48 @@ export function TrialPage({ projectId }: { projectId: string }) {
                   >
                     {d?.severity === "major" && <strong style={{ color: ERROR_COLOR }}>重大偏差 </strong>}
                     {d?.desc ?? ""}
-                    {d?.suggestion ? <span className="muted">（建议：{d.suggestion}）</span> : null}
+                    {d?.suggestion ? <span className="muted">（建议：{d.suggestion === "steer" ? "纠偏拉回" : d.suggestion === "update_outline" ? "修订大纲" : d.suggestion === "accept" ? "接受既成事实" : d.suggestion}）</span> : null}{" "}
+                    <button
+                      className="muted"
+                      style={{ fontSize: 12 }}
+                      title="把这条偏差写成给站内 RP 的纠偏指令"
+                      onClick={() =>
+                        setCorrectionText((prev) =>
+                          (prev ? prev + "\n" : "") +
+                          `针对偏差「${(d?.desc ?? "").slice(0, 60)}」：${d?.suggestion === "steer" ? "请在不推翻已发生剧情的情况下把走向拉回大纲" : "请注意处理"}`,
+                        )
+                      }
+                    >
+                      → 拟为纠偏
+                    </button>
                   </div>
                 ))}
               </>
             )}
+
+            {/* N3：注入纠偏继续站内演（复盘后即可用，不必等有登记的偏差） */}
+            <div className="panel" style={{ marginTop: 8 }}>
+              <label className="field">
+                <span>注入纠偏，继续站内演（写进 author's note 区，下一句起生效；只影响站内 RP，ST 侧需手工贴）</span>
+                <textarea rows={2} value={correctionText} onChange={(e) => setCorrectionText(e.target.value)} style={{ width: "100%" }} placeholder="例：薇薇安尚未察觉地窖钥匙，别让她的反应提前暴露这一点……" />
+              </label>
+              <div className="row" style={{ marginTop: 4 }}>
+                <button className="primary" onClick={injectCorrection} disabled={!correctionText.trim() || !pack || !rpSetup}>
+                  🎯 注入并继续演
+                </button>
+                {corrections.length > 0 && (
+                  <button
+                    onClick={() => {
+                      setCorrections([]);
+                      if (pack && rpSetup) setRpSetup({ ...rpSetup, authorNote: composeAuthorNote(pack.authorNote, []) });
+                    }}
+                  >
+                    清空在场纠偏（{corrections.length}）
+                  </button>
+                )}
+              </div>
+              {!pack && <p className="muted" style={{ fontSize: 12 }}>站内 RP 未开启时此按钮不可用（ST 路径请把纠偏文字贴进 ST 的 author's note）。</p>}
+            </div>
 
             {(recap.proposals ?? []).length > 0 && (
               <>
@@ -936,10 +1014,20 @@ export function TrialPage({ projectId }: { projectId: string }) {
 
             {savedSession && (
               <p className="muted">
-                已保存会话：{savedSession.messages.length} 条消息，status=testing，绑定本幕（id {savedSession.id.slice(0, 8)}…）。
+                已保存会话：{savedSession.messages.length} 条消息，绑定本幕（id {savedSession.id.slice(0, 8)}…）。站内聊过则更新的是同一条工作会话。
               </p>
             )}
             {beatMsg && <p className="muted">{beatMsg}</p>}
+            {playedDone && scene && (
+              <div className="row" style={{ marginTop: 4 }}>
+                <button className="primary" onClick={() => void lockScene()} disabled={!canTransition(scene.status, "locked")}>
+                  🔒 本幕已演毕：标记已锁定
+                </button>
+                {!canTransition(scene.status, "locked") && (
+                  <span className="muted" style={{ fontSize: 12 }}>（需先经「已试跑」，应用节拍标记时已自动置好）</span>
+                )}
+              </div>
+            )}
             {reweaveText.trim() !== "" && (
               <label className="field" style={{ marginTop: 8 }}>
                 <span>反向修纲草案（可手改预览；「应用到节点」落的是系统草案，应用手改内容未实现）</span>

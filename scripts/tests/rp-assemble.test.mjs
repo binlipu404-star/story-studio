@@ -142,4 +142,14 @@ export default async function (t) {
     const s = turnsTranscript([t0("char", "甲"), { role: "system", name: "", content: "旁路" }, t0("user", ""), t0("user", "乙")]);
     t.ok(s.includes("甲") && s.includes("乙") && !s.includes("旁路"), "7. 转写过滤正确");
   }
+
+  // 8. composeAuthorNote：base+纠偏列表重建（N3 注入纠偏的核）
+  {
+    const { composeAuthorNote } = await import("../../dist-test/flow/rp.js");
+    t.eq(composeAuthorNote(undefined, []), "", "8. 全空=空串");
+    const one = composeAuthorNote("基调悬疑。", ["薇薇安先不说话"]);
+    t.ok(one.startsWith("基调悬疑。") && one.endsWith("【纠偏】薇薇安先不说话"), "8. base 在前纠偏在后");
+    const two = composeAuthorNote("基调悬疑。", ["旧令", "新令"].slice(-1));
+    t.ok(!two.includes("旧令") && two.includes("【纠偏】新令"), "8. 限流由列表负责，重建无残留");
+  }
 }
