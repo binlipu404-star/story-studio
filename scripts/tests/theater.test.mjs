@@ -1,4 +1,4 @@
-// 剧场房间装配测试（theater.ts：沙盒装配/剧本装配/台账隔离/借用/副本块/新房形状）
+// 剧场剧组装配测试（theater.ts：沙盒装配/剧本装配/台账隔离/借用/副本块/新组形状）
 import { assembleRoom, newRoom, roomCurrentScene, roomSort } from "../../dist-test/flow/theater.js";
 import { buildScriptSnapshot } from "../../dist-test/flow/script.js";
 
@@ -35,7 +35,7 @@ const canon = (over) => ({ id: "g1", projectId: "p1", type: "event", content: "A
 
 const baseRoom = (over) => ({
   id: "r1", projectId: "p1", nodeId: null, cast: [], userName: "黎明", messages: [], status: "testing",
-  createdAt: 1, updatedAt: 1, kind: "theater", name: "夜航房", pace: "loose", scopeMode: "full", sandbox: false,
+  createdAt: 1, updatedAt: 1, kind: "theater", name: "夜航组", pace: "loose", scopeMode: "full", sandbox: false,
   script: snap, progress: {},
   config: { charId: "ch1", personaId: "", budgetTokens: 8192, reserveTokens: 768, ledgerCadence: 0, borrowProjectLedger: false },
   ...over,
@@ -48,14 +48,14 @@ export default async function (t) {
   t.eq(roomCurrentScene(baseRoom({ progress: { b1: "done", b2: "done" } }))?.title, "第二幕", "1. 演尽=停最后一幕");
   t.eq(roomCurrentScene(baseRoom({ sandbox: true, script: undefined })), null, "1. 沙盒无幕");
 
-  // 2. 剧本房装配：节奏/副本块/台账隔离/greeting
+  // 2. 剧本组装配：节奏/副本块/台账隔离/greeting
   {
     const a = assembleRoom({ room: baseRoom(), project, characters: [char], loreEntries: [lore], roomCanon: [canon()], projectCanon: [canon({ id: "g9", content: "作品级旧事" })] });
     t.eq(a.setup.charName, "薇薇安", "2. 人卡生效");
     t.eq(a.setup.pace, "loose", "2. 节奏透传");
     t.ok(a.setup.scriptBlock.includes("【剧本副本·灯塔】"), "2. 副本块注入");
     t.ok(a.setup.scriptBlock.includes("匕首失踪"), "2. 副本节拍可见");
-    t.ok(a.setup.ledgerBlock.includes("A 烧了信"), "2. 房间正典注入");
+    t.ok(a.setup.ledgerBlock.includes("A 烧了信"), "2. 剧组正典注入");
     t.ok(!a.setup.ledgerBlock.includes("作品级旧事"), "2. 作品级台账默认隔离");
     t.ok(a.setup.ledgerBlock.includes("匕首的去向成谜"), "2. 副本伏笔欠账注入");
     t.ok(a.greeting.includes("匕首失踪"), "2. greeting 含当前幕节拍");
@@ -70,7 +70,7 @@ export default async function (t) {
     t.ok(a.setup.ledgerBlock.includes("作品级旧事") && a.setup.ledgerBlock.includes("借自作品级台账"), "3. 借用+来源标注");
   }
 
-  // 4. 欠账可被房间台账核销（foreshadow 记录正文含 setup）
+  // 4. 欠账可被剧组台账核销（foreshadow 记录正文含 setup）
   {
     const a = assembleRoom({
       room: baseRoom(), project, characters: [char], loreEntries: [lore],
@@ -79,7 +79,7 @@ export default async function (t) {
     t.ok(!a.setup.ledgerBlock.includes("伏笔欠账"), "4. 已回收 → 欠账块消失（核销记录本身仍在正典快照里）");
   }
 
-  // 5. 无卡=旁白；沙盒房装配
+  // 5. 无卡=旁白；沙盒组装配
   {
     const noCard = { ...baseRoom(), config: { ...baseRoom().config, charId: "" } };
     const a = assembleRoom({ room: noCard, project, characters: [char], loreEntries: [], roomCanon: [] });
@@ -94,7 +94,7 @@ export default async function (t) {
   // 6. newRoom 形状与排序
   {
     const r = newRoom({
-      id: "r9", projectId: "p1", name: "新房间", userName: "U", pace: "tight",
+      id: "r9", projectId: "p1", name: "新剧组", userName: "U", pace: "tight",
       scopeMode: "chapters", sandbox: false, script: snap, charId: "ch1", personaId: "", budgetTokens: 4096,
       reserveTokens: 512, ledgerCadence: 10, borrowProjectLedger: false, chapterIds: ["c1"], now: 555,
     });

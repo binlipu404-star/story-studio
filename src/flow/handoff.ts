@@ -14,7 +14,7 @@ export interface TheaterHandoff {
   nodeId: string;
   /** 会话里最后的角色名：剧场据此自动选中人物卡（找不到则维持默认） */
   charHint?: string;
-  /** 把这条试跑工作会话的对话导入新建房间（「续写（去剧场）」） */
+  /** 把这条试跑工作会话的对话导入新建剧组（「续写（去剧场）」） */
   sessionId?: string;
   ts: number;
 }

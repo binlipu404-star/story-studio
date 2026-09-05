@@ -9,7 +9,7 @@ import { GO_TAB_EVENT, type TopTab } from "./flow/nav";
 
 const TABS: { id: TopTab; label: string }[] = [
   { id: "projects", label: "作品" },
-  { id: "theater", label: "🎭 RP 剧场" }, // 独立酒馆：房间/节奏/副本/场记，跨作品
+  { id: "theater", label: "🎭 RP 剧场" }, // 独立酒馆：剧组/节奏/副本/场记，跨作品
   { id: "personas", label: "画像" }, // 全局数据：{{user}} 形象，跨作品
   { id: "settings", label: "设置" },
   { id: "play", label: "调试台" },

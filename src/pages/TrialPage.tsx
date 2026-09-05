@@ -688,7 +688,7 @@ export function TrialPage({ projectId }: { projectId: string }) {
                   {s.rollingSummary ? ` · 前情摘要 ${s.rollingSummary.length} 字` : ""}
                 </span>
                 <button
-                  title="把这条会话带进 RP 剧场：自动按当前大纲开一个房间并接着演"
+                  title="把这条会话带进 RP 剧场：自动按当前大纲开一个剧组并接着演"
                   onClick={() => {
                     putHandoff({
                       kind: "theater",

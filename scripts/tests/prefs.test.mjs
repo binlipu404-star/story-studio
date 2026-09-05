@@ -7,7 +7,7 @@ export default async function (t) {
     const p = parsePrefs(bad);
     t.eq(p.pace, DEFAULT_PREFS.pace, "1. pace 默认: " + String(bad));
     t.eq(p.budgetTokens, 8192, "1. 预算默认");
-    t.eq(p.lastRoomId, "", "1. 房间默认空");
+    t.eq(p.lastRoomId, "", "1. 剧组默认空");
   }
 
   // 2. 往返
@@ -15,7 +15,7 @@ export default async function (t) {
     const p = { ...DEFAULT_PREFS, lastProjectId: "p1", lastRoomId: "r7", pace: "tight", ledgerCadence: 8, borrowProjectLedger: true };
     const back = parsePrefs(serializePrefs(p));
     t.eq(back.lastProjectId, "p1", "2. 项目记忆");
-    t.eq(back.lastRoomId, "r7", "2. 房间记忆");
+    t.eq(back.lastRoomId, "r7", "2. 剧组记忆");
     t.eq(back.pace, "tight", "2. 节奏记忆");
     t.eq(back.ledgerCadence, 8, "2. 楼层频率记忆");
     t.eq(back.borrowProjectLedger, true, "2. 借用开关记忆");

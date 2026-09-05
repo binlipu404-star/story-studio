@@ -42,7 +42,7 @@ const SEC_COLORS: Record<string, string> = {
 };
 
 export interface RpRunnerProps {
-  /** 预算初值（房间 config 驱动；组件挂载后用户可临时改） */
+  /** 预算初值（剧组 config 驱动；组件挂载后用户可临时改） */
   initialBudget?: { budgetTokens: number; reserveTokens: number };
   setup: RpSetup;
   charName: string;
@@ -59,7 +59,7 @@ export interface RpRunnerProps {
   onPersist?: (turns: RpTurn[], summary: string, allowClear?: boolean, allowFold?: boolean) => void;
   /** v3.1-⑥ 流式期自动保存钩子（600ms 去抖半句 + pagehide 立即 flush；父层负责写库） */
   onAutosave?: (turns: RpTurn[], summary: string) => void;
-  /** v3.1-③ 预算编辑即时回调（父层写房间 config + prefs；组件本身不再只存本地 state） */
+  /** v3.1-③ 预算编辑即时回调（父层写剧组 config + prefs；组件本身不再只存本地 state） */
   onBudgetChange?: (budget: number, reserve: number) => void;
   /** 提供则滚动摘要升级为 digest：折叠点同时抽取台账事实并回调（RP 剧场自动台账） */
   onDigest?: (items: DigestLedgerItem[]) => void;
@@ -127,7 +127,7 @@ export function RpRunner({ setup, charName, userName, sceneLabel, greeting, disa
       const localIds = settled.turns.map((t) => t.id).filter(Boolean).join(",");
       const initIds = (init?.turns ?? []).map((t) => t.id).filter(Boolean).join(",");
       if (localIds && localIds !== initIds) {
-        setNote("台面装配有变；本地对话与库内不一致，已保留本地现场（切房或换台可强制对齐）。");
+        setNote("台面装配有变；本地对话与库内不一致，已保留本地现场（切组或换台可强制对齐）。");
         return;
       }
     }
@@ -242,7 +242,7 @@ export function RpRunner({ setup, charName, userName, sceneLabel, greeting, disa
       if (useDigest && d.ledger.length > 0) digestRef.current?.(d.ledger);
       setNote(
         `前情已折叠：${plan.rollup.length} 条旧回合 → 摘要 ${d.summary.length} 字` +
-          (useDigest ? `；顺手记下台账事实 ${d.ledger.length} 条（写入房间正典）` : "") +
+          (useDigest ? `；顺手记下台账事实 ${d.ledger.length} 条（写入剧组正典）` : "") +
           "。",
       );
     } catch (e) {
@@ -408,7 +408,7 @@ export function RpRunner({ setup, charName, userName, sceneLabel, greeting, disa
   const restart = () => {
     // v3.1-⑥ 清空对话=破坏性操作：确认+导出提醒（清空立即落库，不可恢复）
     const floors = turns.filter((t) => t.content.trim()).length;
-    if (floors > 1 && !window.confirm(`「重新开始」会立即清空并持久删除当前 ${floors} 条对话记录与滚动摘要，并清空本房间正典（房间整房重来；作品级台账不动，刷新也不回来）。建议先「⬇ 导出」留底。\n确定重来？`)) return;
+    if (floors > 1 && !window.confirm(`「重新开始」会立即清空并持久删除当前 ${floors} 条对话记录与滚动摘要，并清空本剧组正典（整组重来；作品级台账不动，刷新也不回来）。建议先「⬇ 导出」留底。\n确定重来？`)) return;
     ctrlRef.current?.abort();
     const fresh = { id: newTurnId(), role: "char" as const, name: charName, content: greeting };
     setTurns([fresh]);
@@ -474,11 +474,11 @@ export function RpRunner({ setup, charName, userName, sceneLabel, greeting, disa
           {assembly.droppedTurns > 0 && <span style={{ color: "#e65100", fontSize: 11 }}>已裁旧消息 {assembly.droppedTurns} 条（前情摘要兜底）</span>}
           {assembly.overflow && <span style={{ color: "#b3261e", fontSize: 11 }}>超出预算：保护段已占满，建议压缩前情或换短卡</span>}
           {summary && <span className="muted">前情摘要 {summary.length} 字</span>}
-          <label className="muted" style={{ fontSize: 11 }} title="编辑即自动记忆（写进房间配置与全局默认），无需保存按钮">
+          <label className="muted" style={{ fontSize: 11 }} title="编辑即自动记忆（写进剧组配置与全局默认），无需保存按钮">
             预算
             <input type="number" min={1024} max={200000} step={256} value={budgetT} onChange={(e) => { const b = Math.max(1024, Number(e.target.value) || 8192); setBudgetT(b); scheduleBudgetSave(b, reserveT); }} style={{ width: 80, marginLeft: 4 }} />
           </label>
-          <label className="muted" style={{ fontSize: 11 }} title="编辑即自动记忆（写进房间配置与全局默认），无需保存按钮">
+          <label className="muted" style={{ fontSize: 11 }} title="编辑即自动记忆（写进剧组配置与全局默认），无需保存按钮">
             预留回复
             <input type="number" min={128} max={16384} step={128} value={reserveT} onChange={(e) => { const r = Math.min(16384, Math.max(128, Number(e.target.value) || 768)); setReserveT(r); scheduleBudgetSave(budgetT, r); }} style={{ width: 70, marginLeft: 4 }} />
           </label>

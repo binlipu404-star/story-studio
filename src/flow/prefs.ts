@@ -11,8 +11,8 @@ export interface TheaterPrefs {
   ledgerCadence: number; // 每 N 个用户楼层整理一次台账；0=关；1=每楼自动（v3.1 默认）
   budgetTokens: number;
   reserveTokens: number;
-  borrowProjectLedger: boolean; // 房间正典之外是否手动借用作品级台账
-  lastRoomId: string; // 上次打开的房间（刷新回到原对话）
+  borrowProjectLedger: boolean; // 剧组正典之外是否手动借用作品级台账
+  lastRoomId: string; // 上次打开的剧组（刷新回到原对话）
 }
 
 export const DEFAULT_PREFS: TheaterPrefs = {

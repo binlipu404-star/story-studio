@@ -1,7 +1,7 @@
 // ============================================================
 // RP 剧场剧本副本与推进（v3；纯逻辑，Node/浏览器同构，零运行时依赖 core/types 之外）
 //
-// 原则：聊天只认「副本」(ScriptSnapshot)。主纲的改动永远不会自动渗透进房间——
+// 原则：聊天只认「副本」(ScriptSnapshot)。主纲的改动永远不会自动渗透进剧组——
 // full 模式只*提示*可同步（用户点按才刷新副本）；chapters 模式连提示都不要。
 // 节拍完成标记只写 roomProgress，永不回写 OutlineNode。
 // ============================================================
@@ -96,7 +96,7 @@ export function storyAdvance(snapshot: ScriptSnapshot, progress: Record<string, 
   const curBeat = cur ? cur.beats.find((b) => !progress[b.id]) ?? null : null;
   const finished = snapshot.scenes.length > 0 && currentSceneIndex === null;
   const nextHint = snapshot.scenes.length === 0
-    ? "（沙盒房间：无剧本，自由即兴）"
+    ? "（沙盒剧组：无剧本，自由即兴）"
     : finished
       ? "副本内所有节拍已标记完成——剧本已演到副本尽头。"
       : `当前：第 ${currentSceneIndex! + 1}/${snapshot.scenes.length} 幕「${cur!.title}」（${cur!.path}）` +
@@ -129,7 +129,7 @@ export function scriptBlock(
 ): string {
   if (!snapshot.scenes.length) return "";
   const cur = adv.currentSceneIndex ?? snapshot.scenes.length - 1;
-  const lines: string[] = [`【剧本副本·${snapshot.sourceTitle}】（房间只按副本演；标记只影响房间）`];
+  const lines: string[] = [`【剧本副本·${snapshot.sourceTitle}】（剧组只按副本演；标记只影响剧组）`];
   snapshot.scenes.forEach((sc, i) => {
     if (before > 0 || after > 0) {
       if (i < cur - before && adv.currentSceneIndex !== null) return;
@@ -153,7 +153,7 @@ export function scriptBlock(
  * AI 和用户（副本清单/进展头）看到的始终是最新进度。纯函数可测。
  */
 export function progressMemoText(adv: StoryAdvance): string {
-  if (adv.finished) return "【进展备忘】副本节拍已全部演完（正典以房间台账为准）。";
+  if (adv.finished) return "【进展备忘】副本节拍已全部演完（正典以剧组台账为准）。";
   if (adv.currentSceneIndex === null) return "";
   const donePart = adv.beatsTotal > 0 ? `拍 ${adv.beatsDone}/${adv.beatsTotal}` : "无拍";
   return (
@@ -202,19 +202,19 @@ function childrenSorted(nodes: OutlineNode[], parentId: ID | null): OutlineNode[
     .sort((a, b) => a.order - b.order || a.createdAt - b.createdAt);
 }
 
-/** 模式判定（老房间无 scopeMode → 保守按 full） */
+/** 模式判定（老剧组无 scopeMode → 保守按 full） */
 export function roomScope(scopeMode: TheaterScope | undefined): TheaterScope {
   return scopeMode === "chapters" ? "chapters" : "full";
 }
 
 /**
- * 副本视角的伏笔欠账：setup 未被房间台账（foreshadow 类型且正文含 setup 关键片段）
- * 或未勾节拍标记视为欠账。只认房间数据——剧本副本之外零依赖（chapters 模式的
+ * 副本视角的伏笔欠账：setup 未被剧组台账（foreshadow 类型且正文含 setup 关键片段）
+ * 或未勾节拍标记视为欠账。只认剧组数据——剧本副本之外零依赖（chapters 模式的
  * 「不敏感」正从这里成立：主纲改了也看不到）。
  */
 export function snapshotDebt(
   snapshot: ScriptSnapshot,
-  paidSetups: string[], // 房间台账中 foreshadow 记录的正文（视为已回收声明）
+  paidSetups: string[], // 剧组台账中 foreshadow 记录的正文（视为已回收声明）
 ): { sceneTitle: string; setup: string }[] {
   const norm = (s: string): string => s.replace(/[\s，。！？、；：""''（）()《》【】…—-]/g, "").toLowerCase();
   const paid = paidSetups.map(norm);

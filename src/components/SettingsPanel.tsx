@@ -203,7 +203,7 @@ export function SettingsPanel() {
           {progressMsg && <span className="muted">{progressMsg}</span>}
         </div>
         <p className="muted" style={{ marginTop: 6, fontSize: 12 }}>
-          进度记忆＝各页面自动记的现场（选中项、草稿、最后打开的房间等）。平时自动记，这里一键清除。
+          进度记忆＝各页面自动记的现场（选中项、草稿、最后打开的剧组等）。平时自动记，这里一键清除。
         </p>
         <div className="row" style={{ marginTop: 12 }}>
           <button className="primary" onClick={save}>

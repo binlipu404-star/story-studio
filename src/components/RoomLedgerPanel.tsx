@@ -1,11 +1,11 @@
 // ============================================================
-// 房间台账面板（v3.1-④）：台账从作品工作区迁入 RP 剧场，且每个房间独立。
+// 剧组台账面板（v3.1-④）：台账从作品工作区迁入 RP 剧场，且每个剧组独立。
 //
 // 三层结构：
-//   1. 房间台账——roomId 绑定的本房间正典（场记直写 confirmed；编辑/删除都只动本房间）；
+//   1. 剧组台账——roomId 绑定的本剧组正典（场记直写 confirmed；编辑/删除都只动本剧组）；
 //   2. 作品级台账——ST 试跑复盘的提案在这里裁决（确认才进作品正典），已确认可一键
-//      「引入本房间」（复制成房间行，源不动——房间正典始终优先）；
-//   3. 伏笔欠账——用房间剧本副本视角算（snapshotDebt），主纲改了也看不到。
+//      「引入本剧组」（复制成剧组行，源不动——剧组正典始终优先）；
+//   3. 伏笔欠账——用剧组剧本副本视角算（snapshotDebt），主纲改了也看不到。
 // 原作品页的「台账」页签由此取代删除。
 // ============================================================
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -36,7 +36,7 @@ export function RoomLedgerPanel({
 }: {
   projectId: string;
   roomId: string;
-  snapshot: ScriptSnapshot | null; // 房间剧本副本（算伏笔欠账用；沙盒=null）
+  snapshot: ScriptSnapshot | null; // 剧组剧本副本（算伏笔欠账用；沙盒=null）
   onChanged: () => void; // 通知父层刷新注入用正典
 }) {
   const [roomRows, setRoomRows] = useState<LedgerRecord[]>([]);
@@ -47,7 +47,7 @@ export function RoomLedgerPanel({
   const [info, setInfo] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
-  // 始终指向当前房间的 roomId（refresh 闭包外置的竞态判据）
+  // 始终指向当前剧组的 roomId（refresh 闭包外置的竞态判据）
   const liveRoomId = useRef(roomId);
   useEffect(() => {
     liveRoomId.current = roomId;
@@ -57,7 +57,7 @@ export function RoomLedgerPanel({
     try {
       const rr = roomId ? await repos.listLedger(projectId, undefined, roomId) : [];
       const pr = await repos.listLedger(projectId);
-      // 房间切换竞态守卫：两次 await 期间切了房间，旧房间的迟到响应不得覆盖新房间的行
+      // 剧组切换竞态守卫：两次 await 期间切了剧组，旧剧组的迟到响应不得覆盖新剧组的行
       if (liveRoomId.current !== roomId) return;
       setRoomRows(rr);
       setProjRows(pr.filter((r) => !r.roomId));
@@ -115,7 +115,7 @@ export function RoomLedgerPanel({
       await repos.addRoomCanon([
         { id: repos.uid(), projectId, roomId, type: r.type, content: r.content, actors: r.actors, status: "confirmed", createdAt: now },
       ]);
-    }, `已引入本房间：${r.content.slice(0, 30)}…（作品级原件不动）`);
+    }, `已引入本剧组：${r.content.slice(0, 30)}…（作品级原件不动）`);
   };
 
   const badge = (t: LedgerType) => `${TYPE_ICONS[t] ?? "·"}${LEDGER_TYPE_NAMES[t] ?? t}`;
@@ -144,7 +144,7 @@ export function RoomLedgerPanel({
       <div className="panel">
         <div className="row" style={{ flexWrap: "wrap", gap: 6 }}>
           <b>📒 台账</b>
-          <span className="muted">房间 {roomConfirmed.length} · 作品正典 {projConfirmed.length} · 待裁决 {projProposed.length}</span>
+          <span className="muted">剧组 {roomConfirmed.length} · 作品正典 {projConfirmed.length} · 待裁决 {projProposed.length}</span>
         </div>
         <div className="row" style={{ marginTop: 6, flexWrap: "wrap" }}>
           <button className={filter === "" ? "tab active" : "tab"} onClick={() => setFilter("")}>全部</button>
@@ -159,12 +159,12 @@ export function RoomLedgerPanel({
         {info && <p className="muted" style={{ fontSize: 12 }}>{info} <button style={{ fontSize: 10 }} onClick={() => setInfo(null)}>知道了</button></p>}
       </div>
 
-      {/* 1. 房间台账（本房间独立正典；roomId="" 的无房间模式不显示） */}
+      {/* 1. 剧组台账（本剧组独立正典；roomId="" 的无剧组模式不显示） */}
       {roomId !== "" && (
       <section className="panel">
-        <h3 style={{ margin: 0 }}>房间正典（只属于本房间）</h3>
+        <h3 style={{ margin: 0 }}>剧组正典（只属于本剧组）</h3>
         {roomConfirmed.length === 0 && (
-          <p className="muted" style={{ fontSize: 12 }}>空白。场记整理的已演事实写在这里——新房间不继承任何旧事实。</p>
+          <p className="muted" style={{ fontSize: 12 }}>空白。场记整理的已演事实写在这里——新剧组不继承任何旧事实。</p>
         )}
         {timeline.map(([d, list]) => (
           <div key={d}>
@@ -190,7 +190,7 @@ export function RoomLedgerPanel({
         ))}
         {roomRejected.length > 0 && (
           <details style={{ marginTop: 4 }}>
-            <summary className="muted" style={{ fontSize: 12 }}>本房间已驳回（{roomRejected.length}）</summary>
+            <summary className="muted" style={{ fontSize: 12 }}>本剧组已驳回（{roomRejected.length}）</summary>
             {roomRejected.map((r) => (
               <div key={r.id} className="row" style={{ gap: 6, padding: "2px 0" }}>
                 <span className="muted" style={{ flex: 1, fontSize: 12, textDecoration: "line-through" }}>{r.content}</span>
@@ -204,9 +204,9 @@ export function RoomLedgerPanel({
 
       {/* 2. 作品级台账（提案裁决 + 引入桥） */}
       <section className="panel">
-        <h3 style={{ margin: 0 }}>作品级台账（跨房间共享）</h3>
+        <h3 style={{ margin: 0 }}>作品级台账（跨剧组共享）</h3>
         <p className="muted" style={{ fontSize: 11, margin: "4px 0" }}>
-          ST 试跑复盘的提案在这里裁决（确认才进作品正典）；房间正典永远优先，作品级只在配置条打开「借作品级台账」时标注注入。
+          ST 试跑复盘的提案在这里裁决（确认才进作品正典）；剧组正典永远优先，作品级只在配置条打开「借作品级台账」时标注注入。
         </p>
         {projProposed.length > 0 && (
           <div style={{ marginTop: 4 }}>
@@ -229,23 +229,23 @@ export function RoomLedgerPanel({
           </div>
         )}
         <details style={{ marginTop: 4 }}>
-          <summary className="muted" style={{ fontSize: 12 }}>作品正典（{projConfirmed.length}）——可引入本房间</summary>
+          <summary className="muted" style={{ fontSize: 12 }}>作品正典（{projConfirmed.length}）——可引入本剧组</summary>
           {projConfirmed.length === 0 && <p className="muted" style={{ fontSize: 12 }}>作品级还没有已确认事实。</p>}
           {projConfirmed.slice(-40).reverse().map((r) => (
             <div key={r.id} className="row" style={{ gap: 6, padding: "2px 0" }}>
               <span className="muted" style={{ whiteSpace: "nowrap", fontSize: 12 }}>{badge(r.type)}</span>
               <span style={{ flex: 1, fontSize: 12 }}>{r.content}</span>
-              {roomId !== "" && <button className="muted" style={{ fontSize: 11 }} onClick={() => void importToRoom(r)} title="复制进本房间正典（作品级原件不动）">引入</button>}
+              {roomId !== "" && <button className="muted" style={{ fontSize: 11 }} onClick={() => void importToRoom(r)} title="复制进本剧组正典（作品级原件不动）">引入</button>}
             </div>
           ))}
         </details>
       </section>
 
-      {/* 3. 伏笔欠账（房间副本视角） */}
+      {/* 3. 伏笔欠账（剧组副本视角） */}
       {!snapshot || snapshot.scenes.length === 0 ? null : (
         <section className="panel">
           <h3 style={{ margin: 0 }}>伏笔欠账（副本视角 · {openDebts.length}）</h3>
-          {openDebts.length === 0 && <p className="muted" style={{ fontSize: 12 }}>副本里的伏笔在房间正典中都找到了回收记录。</p>}
+          {openDebts.length === 0 && <p className="muted" style={{ fontSize: 12 }}>副本里的伏笔在剧组正典中都找到了回收记录。</p>}
           {openDebts.map((d, i) => (
             <div key={`${d.sceneTitle}:${i}`} className="row" style={{ gap: 6, padding: "2px 0", fontSize: 12 }}>
               <span style={{ color: "#b3261e" }}>欠</span>

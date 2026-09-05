@@ -1,15 +1,15 @@
 // ============================================================
 // RP 剧场（v3 独立化）—— 顶层页签，与作品平级。
 //
-// 房间模型：一个房间 = 一条 kind:"theater" 的会话行，自带——
+// 剧组模型：一个剧组 = 一条 kind:"theater" 的会话行，自带——
 //   · 剧本副本（开台时对选定作品大纲拍的快照；之后主纲怎么改都不渗进来）
 //   · full 模式：可显式「同步副本」感知主纲更新；chapters 模式：永不同步（试跑语义）
-//   · 房间正典（roomId 绑定的 confirmed 台账；新房间=空白正典；可选手动借作品级）
-//   · 进展标记（progress 只写房间，永不回写主纲——agent 物理没有主纲写工具）
+//   · 剧组正典（roomId 绑定的 confirmed 台账；新剧组=空白正典；可选手动借作品级）
+//   · 进展标记（progress 只写剧组，永不回写主纲——agent 物理没有主纲写工具）
 //   · 节奏（紧凑=强引导 / 舒缓=弱引导）、楼层定时整理（每 N 楼场记自动落正典）
 // 场记 agent（P3）：7 个只读+副本写工具，「现在整理」或楼层触发；端点不支持
-// tools 时自动降级为纯摘要整理（digest→直接进房间正典）。
-// 本地写盘（P4）：连接一个文件夹后每轮稳定落定自动覆盖写 <房间名>-<id6>.jsonl；
+// tools 时自动降级为纯摘要整理（digest→直接进剧组正典）。
+// 本地写盘（P4）：连接一个文件夹后每轮稳定落定自动覆盖写 <剧组名>-<id6>.jsonl；
 // 浏览器不支持则走手动导出（诚实降级，不假装能自动）。
 // 与「ST 试跑」分工不变：那页只做 ST 导出/往返/节拍命中复盘；站内 RP 全在这。
 // ============================================================
@@ -61,7 +61,7 @@ export function TheaterPage() {
   const [activeId, setActiveId] = useState("");
   const prefsRef = useRef(loadPrefs());
 
-  // ---- 当前房间所属作品的旁挂数据 ----
+  // ---- 当前剧组所属作品的旁挂数据 ----
   const activeRoom = useMemo(() => rooms.find((r) => r.id === activeId) ?? null, [rooms, activeId]);
   const project = useMemo(
     () => projects.find((p) => p.id === activeRoom?.projectId) ?? null,
@@ -84,7 +84,7 @@ export function TheaterPage() {
   const [agentDowngraded, setAgentDowngraded] = useState(false);
   useEffect(() => {
     if (!activeId) return;
-    // 换房间先清空视图（有进行中/已完成的 run 时，subscribe 会立即回放其快照）
+    // 换剧组先清空视图（有进行中/已完成的 run 时，subscribe 会立即回放其快照）
     setAgentSteps([]);
     setAgentDowngraded(false);
     return subscribeAgentRun(activeId, (s) => {
@@ -110,13 +110,13 @@ export function TheaterPage() {
     if (!w) return;
     try {
       await w.pick();
-      setNote(`已连接文件夹「${w.status.dirName}」：此后每轮稳定落定都会覆盖写 <房间名>-<id6>.jsonl（全量快照）。`);
+      setNote(`已连接文件夹「${w.status.dirName}」：此后每轮稳定落定都会覆盖写 <剧组名>-<id6>.jsonl（全量快照）。`);
     } catch (e) {
       if (!isAbort(e)) setNote(`连接文件夹失败：${errMsg(e)}`);
     }
   };
 
-  // ---- 新建房间表单 ----
+  // ---- 新建剧组表单 ----
   const [creating, setCreating] = useState(false);
   const [nf, setNf] = useState({
     name: "",
@@ -136,8 +136,8 @@ export function TheaterPage() {
   const [renameVal, setRenameVal] = useState("");
 
   // ------------------------------------------------------------
-  // v3.1-⑥ H2 双开防护：同房间跨页签互斥。
-  // 锁只在**同一个浏览器**的页签间互斥；拿到锁的页签可写，拿不到的整房只读
+  // v3.1-⑥ H2 双开防护：同剧组跨页签互斥。
+  // 锁只在**同一个浏览器**的页签间互斥；拿到锁的页签可写，拿不到的整组只读
   // （消息整列表 last-write-wins 是跨页签唯一没法用写链解决的数据竞争）。
   // ------------------------------------------------------------
   const [roomLocked, setRoomLocked] = useState(false);
@@ -155,7 +155,7 @@ export function TheaterPage() {
           if (!cancelled) setRoomLocked(true);
           return; // 拿不到 → 立即归还（本来就没有）
         }
-        await held; // 拿到了：一直持有到本房切走/卸载
+        await held; // 拿到了：一直持有到本组切走/卸载
       })
       .catch(() => {
         /* 锁 API 异常不拦正常使用 */
@@ -193,7 +193,7 @@ export function TheaterPage() {
     })();
   }, [refreshRooms]);
 
-  // 当前房间所属作品数据（切房间即重拉；正典=房间绑定+作品级备用）
+  // 当前剧组所属作品数据（切剧组即重拉；正典=剧组绑定+作品级备用）
   useEffect(() => {
     if (!activeRoom) {
       setNodes([]);
@@ -223,9 +223,9 @@ export function TheaterPage() {
         setCorrections([]);
         setAgentSteps([]);
         setAgentDowngraded(false);
-        // 无需额外 bump key：RpRunner 以 activeRoom.id 为 key，切房间必然重挂载并水合 initial
+        // 无需额外 bump key：RpRunner 以 activeRoom.id 为 key，切剧组必然重挂载并水合 initial
       } catch (e) {
-        if (!dead) setNote(`房间数据加载失败：${errMsg(e)}`);
+        if (!dead) setNote(`剧组数据加载失败：${errMsg(e)}`);
       }
     })();
     return () => {
@@ -233,7 +233,7 @@ export function TheaterPage() {
     };
   }, [activeRoom?.id]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // 记住最后房间
+  // 记住最后剧组
   useEffect(() => {
     if (!activeId) return;
     prefsRef.current = { ...prefsRef.current, lastRoomId: activeId };
@@ -259,7 +259,7 @@ export function TheaterPage() {
   );
 
   // ------------------------------------------------------------
-  // 台面装配：只认房间自带数据（副本+房间正典），主纲渗透不进来
+  // 台面装配：只认剧组自带数据（副本+剧组正典），主纲渗透不进来
   // ------------------------------------------------------------
   const persona = useMemo(
     () => personas.find((p) => p.id === activeRoom?.config?.personaId) ?? null,
@@ -293,7 +293,7 @@ export function TheaterPage() {
   }, [activeRoom, nodes]);
 
   // ------------------------------------------------------------
-  // 房间持久化（稳定落定才写；每次写盘全量 jsonl 快照）
+  // 剧组持久化（稳定落定才写；每次写盘全量 jsonl 快照）
   // v3.1-⑥：per-room 串行写链——异步落库按调用序执行，后发的旧快照不会越过
   // 先发的新快照；链内 updateSession 事务读-改-写，跨页签并发也只丢单项补丁。
   // ------------------------------------------------------------
@@ -318,7 +318,7 @@ export function TheaterPage() {
       if (!activeRoom) return null;
       if (roomLocked) return null; // 双开只读：拿不到锁的页签禁止一切写（含配置/节拍/重命名）
       const id = activeRoom.id;
-      // v3.1-⑥ 事务内读-改-写：场记/自动保存并发写同一房间不互相覆盖
+      // v3.1-⑥ 事务内读-改-写：场记/自动保存并发写同一剧组不互相覆盖
       const saved = await queueRoomWrite(id, () => repos.updateSession(id, (cur) => ({ ...cur, ...patch })));
       if (saved) setRooms((prev) => roomSort(prev.map((r) => (r.id === saved.id ? saved : r))));
       return saved ?? null;
@@ -401,19 +401,19 @@ export function TheaterPage() {
       }
       // 本地写盘：全量快照覆盖（去抖在 writer 内部）
       if (saved) writerRef.current?.queue(roomFileName(saved.name ?? "", saved.id), exportJsonl(saved, assembly?.setup.charName ?? "角色"));
-      // 重新开始（用户确认过的清空，allowClear 唯一来源就是它）→ 房间正典一并清空：
-      // 整房重来 = 对话+滚动摘要+正典同归于零；作品级台账与他房正典分毫不动。
+      // 重新开始（用户确认过的清空，allowClear 唯一来源就是它）→ 剧组正典一并清空：
+      // 整组重来 = 对话+滚动摘要+正典同归于零；作品级台账与他组正典分毫不动。
       if (allowClear && saved) {
         try {
           const wiped = await queueRoomWrite(id, () => repos.clearRoomCanon(id));
           setRoomCanon([]);
-          setNote(`重新开始：对话与滚动摘要已清空，房间正典同清 ${wiped ?? 0} 条（作品级台账未动）。`);
+          setNote(`重新开始：对话与滚动摘要已清空，剧组正典同清 ${wiped ?? 0} 条（作品级台账未动）。`);
         } catch {
-          setNote("重新开始：对话已清空，但房间正典清除失败——请到右栏台账面板手动清理。");
+          setNote("重新开始：对话已清空，但剧组正典清除失败——请到右栏台账面板手动清理。");
         }
       }
       // 楼层定时 → 场记自动整理（跑在注册表里，切页不中断；活动流里见）；
-      // 显式传本房间 id 与幕名：写链等待期间切了房间也不能把场记打到别的房间
+      // 显式传本剧组 id 与幕名：写链等待期间切了剧组也不能把场记打到别的剧组
       if (due && saved && (saved.config?.agentEnabled ?? true)) void organize("auto", id, assembly?.sceneTitle);
       if (saved) setRooms((prev) => roomSort(prev.map((r) => (r.id === saved.id ? saved : r))));
     },
@@ -530,8 +530,8 @@ export function TheaterPage() {
 
   const organize = useCallback(
     (mode: "manual" | "auto", roomId?: string, sceneTitle?: string) => {
-      // roomId/sceneTitle 显传（auto 来自 persist：写链等待期间用户可能已切房，
-      // 若都读 ref，场记会打在错误的房间上）；手动按钮不传，落当前房间。
+      // roomId/sceneTitle 显传（auto 来自 persist：写链等待期间用户可能已切组，
+      // 若都读 ref，场记会打在错误的剧组上）；手动按钮不传，落当前剧组。
       const rid = roomId ?? activeRoomIdRef.current;
       if (!rid) return Promise.resolve();
       return startOrganize({ roomId: rid, io: organizeIO, sceneTitle: sceneTitle ?? (sceneTitleRef.current || "（未知场景）"), mode });
@@ -539,7 +539,7 @@ export function TheaterPage() {
     [organizeIO],
   );
   // ------------------------------------------------------------
-  // 房间管理
+  // 剧组管理
   // ------------------------------------------------------------
   const createRoom = async () => {
     const pid = nf.projectId || prefsRef.current.lastProjectId || projects[0]?.id || "";
@@ -559,7 +559,7 @@ export function TheaterPage() {
       const room = newRoom({
         id: repos.uid(),
         projectId: pid,
-        name: nf.name.trim() || `${proj?.title ?? "作品"} · 房间${rooms.filter((r) => r.projectId === pid).length + 1}`,
+        name: nf.name.trim() || `${proj?.title ?? "作品"} · 剧组${rooms.filter((r) => r.projectId === pid).length + 1}`,
         userName: personaName(nf.personaId || personas.find((p) => p.isDefault)?.id || ""),
         pace: nf.pace,
         scopeMode: nf.sandbox ? "full" : nf.scopeMode,
@@ -580,17 +580,17 @@ export function TheaterPage() {
       setCreating(false);
       prefsRef.current = { ...prefsRef.current, lastProjectId: pid, pace: nf.pace, ledgerCadence: room.config!.ledgerCadence, borrowProjectLedger: nf.borrowProjectLedger };
       savePrefs(prefsRef.current);
-      setNote(`房间「${saved.name}」已开：正典空白，副本已拍（${snap.scenes.length} 幕）。${nf.sandbox ? "沙盒房没有剧本约束。" : ""}`);
+      setNote(`剧组「${saved.name}」已开：正典空白，副本已拍（${snap.scenes.length} 幕）。${nf.sandbox ? "沙盒组没有剧本约束。" : ""}`);
     } catch (e) {
-      setNote(`开房失败：${errMsg(e)}`);
+      setNote(`开机失败：${errMsg(e)}`);
     }
   };
 
   const deleteRoom = async (room: RPSession) => {
-    if (!window.confirm(`删除房间「${room.name ?? room.id}」？其对话与房间正典（${room.id.slice(0, 6)}…绑定台账）一并删除，不可撤销。`)) return;
+    if (!window.confirm(`删除剧组「${room.name ?? room.id}」？其对话与剧组正典（${room.id.slice(0, 6)}…绑定台账）一并删除，不可撤销。`)) return;
     // M5 留底：先自动导出一份 jsonl 落盘（磁盘旧快照不会被删，双保险）
     try {
-      // 角色名按**本房间**推导（旧版误用当前活动房间的装配名）
+      // 角色名按**本剧组**推导（旧版误用当前活动剧组的装配名）
       const charName = room.id === activeRoom?.id ? assembly?.setup.charName ?? "角色" : room.config?.charId ? "角色" : "旁白";
       downloadText(roomFileName(room.name ?? "", room.id), exportJsonl(room, charName));
     } catch {
@@ -610,7 +610,7 @@ export function TheaterPage() {
 
   /** 列表上不依赖 activeRoom 的直改（重命名/标记等）：走链 + 事务读-改-写，不碰在飞的消息 */
   const saveRoomDirect = async (room: RPSession, patch: Partial<RPSession>) => {
-    if (roomLocked && room.id === activeRoom?.id) return; // 双开只读同样拦住活动房间的直接改动
+    if (roomLocked && room.id === activeRoom?.id) return; // 双开只读同样拦住活动剧组的直接改动
     const saved = await queueRoomWrite(room.id, () => repos.updateSession(room.id, (cur) => ({ ...cur, ...patch })));
     if (saved) setRooms((prev) => roomSort(prev.map((r) => (r.id === saved.id ? saved : r))));
   };
@@ -638,7 +638,7 @@ export function TheaterPage() {
     void saveRoom({ progress });
   };
 
-  /** 台账面板改动后刷新注入用正典（房间+作品级） */
+  /** 台账面板改动后刷新注入用正典（剧组+作品级） */
   const refreshCanon = useCallback(async (roomId: string) => {
     const cur = await repos.getSession(roomId);
     if (!cur) return;
@@ -684,7 +684,7 @@ export function TheaterPage() {
     if (!activeRoom || turns.length === 0) return;
     const cur = roomCurrentScene(activeRoom);
     if (!cur) {
-      setNote("沙盒房没有剧本幕，复盘（节拍命中）不适用；要小说化请用「⬇ jsonl」导出。");
+      setNote("沙盒组没有剧本幕，复盘（节拍命中）不适用；要小说化请用「⬇ jsonl」导出。");
       return;
     }
     const msgs = turnsToMessages(turns, activeRoom.messages);
@@ -714,7 +714,7 @@ export function TheaterPage() {
     if (th) pendingRoomCreate.current = th;
   }, [loaded]);
 
-  // 自动开房（「续写（去剧场）」/「导去剧场演全本」）：数据就绪后建一次
+  // 自动开机（「续写（去剧场）」/「导去剧场演全本」）：数据就绪后建一次
   useEffect(() => {
     const th = pendingRoomCreate.current;
     if (!loaded || !th) return;
@@ -752,9 +752,9 @@ export function TheaterPage() {
         const saved = await repos.saveSession(room);
         setRooms((prev) => roomSort([saved, ...prev.filter((r) => r.id !== saved.id)]));
         setActiveId(saved.id);
-        setNote(src ? "由试跑「续写」移交：对话已带进新房间，接着演。" : "已按当前大纲开全本房间（full 模式：主纲之后有更新可点「同步副本」）。");
+        setNote(src ? "由试跑「续写」移交：对话已带进新剧组，接着演。" : "已按当前大纲开全本剧组（full 模式：主纲之后有更新可点「同步副本」）。");
       } catch (e) {
-        setNote(`开房失败：${errMsg(e)}`);
+        setNote(`开机失败：${errMsg(e)}`);
       }
     })();
   }, [loaded, rooms.length, projects]); // eslint-disable-line react-hooks/exhaustive-deps
@@ -782,12 +782,12 @@ export function TheaterPage() {
 
   return (
     <div style={{ display: "flex", gap: 14, alignItems: "flex-start" }}>
-      {/* ============ 左栏：房间列表 ============ */}
+      {/* ============ 左栏：剧组列表 ============ */}
       <aside style={{ width: 232, flexShrink: 0, display: "grid", gap: 8 }}>
-        <button onClick={() => setCreating((v) => !v)}>{creating ? "收起新建" : "＋ 新建房间"}</button>
+        <button onClick={() => setCreating((v) => !v)}>{creating ? "收起新建" : "＋ 新建剧组"}</button>
         {creating && (
           <div className="panel" style={{ display: "grid", gap: 6 }}>
-            <input placeholder="房间名（可空=自动）" value={nf.name} onChange={(e) => setNf({ ...nf, name: e.target.value })} />
+            <input placeholder="剧组名（可空=自动）" value={nf.name} onChange={(e) => setNf({ ...nf, name: e.target.value })} />
             <select
               value={nf.projectId || projects[0]?.id || ""}
               onChange={async (e) => {
@@ -809,7 +809,7 @@ export function TheaterPage() {
               ))}
             </select>
             <label style={{ fontSize: 12 }}>
-              <input type="checkbox" checked={nf.sandbox} onChange={(e) => setNf({ ...nf, sandbox: e.target.checked })} /> 沙盒房（不用剧本，自由即兴）
+              <input type="checkbox" checked={nf.sandbox} onChange={(e) => setNf({ ...nf, sandbox: e.target.checked })} /> 沙盒组（不用剧本，自由即兴）
             </label>
             {!nf.sandbox && (
               <>
@@ -870,14 +870,14 @@ export function TheaterPage() {
               onChange={(e) => setNf({ ...nf, ledgerCadence: e.target.value })}
             />
             <label style={{ fontSize: 12 }}>
-              <input type="checkbox" checked={nf.borrowProjectLedger} onChange={(e) => setNf({ ...nf, borrowProjectLedger: e.target.checked })} /> 借用作品级台账（默认各房独立正典）
+              <input type="checkbox" checked={nf.borrowProjectLedger} onChange={(e) => setNf({ ...nf, borrowProjectLedger: e.target.checked })} /> 借用作品级台账（默认各组独立正典）
             </label>
-            <button onClick={() => void createRoom()}>开房</button>
+            <button onClick={() => void createRoom()}>开机</button>
           </div>
         )}
 
         <div style={{ display: "grid", gap: 4 }}>
-          {rooms.length === 0 && <div className="panel" style={{ color: "var(--muted)", fontSize: 12 }}>还没有房间：点上方「新建房间」。剧本来自作品的「大纲工作台」。</div>}
+          {rooms.length === 0 && <div className="panel" style={{ color: "var(--muted)", fontSize: 12 }}>还没有剧组：点上方「新建剧组」。剧本来自作品的「大纲工作台」。</div>}
           {rooms.map((r) => (
             <div
               key={r.id}
@@ -914,20 +914,20 @@ export function TheaterPage() {
                 >
                   ⬇
                 </button>
-                <button style={{ fontSize: 11, padding: "1px 5px", color: "#b3261e" }} title="删除房间及其正典" onClick={() => void deleteRoom(r)}>删</button>
+                <button style={{ fontSize: 11, padding: "1px 5px", color: "#b3261e" }} title="删除剧组及其正典" onClick={() => void deleteRoom(r)}>删</button>
               </span>
             </div>
           ))}
         </div>
       </aside>
 
-      {/* ============ 右栏：房间详情 ============ */}
+      {/* ============ 右栏：剧组详情 ============ */}
       <section style={{ flex: 1, minWidth: 0, display: "grid", gap: 10 }}>
         {!activeRoom || !assembly ? (
-          <div className="panel">左侧新建或选择一个房间。房间=一段长期 RP：对话、剧本副本、正典都长在房间里，切页不丢。</div>
+          <div className="panel">左侧新建或选择一个剧组。剧组=一段长期 RP：对话、剧本副本、正典都长在剧组里，切页不丢。</div>
         ) : (
           <>
-            {/* 房间头：模式/同步/写盘状态 */}
+            {/* 剧组头：模式/同步/写盘状态 */}
             <div className="panel" style={{ display: "flex", flexWrap: "wrap", gap: 8, alignItems: "center" }}>
               <b>{activeRoom.name ?? "（未命名）"}</b>
               <span style={{ fontSize: 12, color: "var(--muted)" }}>
@@ -936,7 +936,7 @@ export function TheaterPage() {
                 {adv?.finished ? " · 副本已全部演完" : ""}
               </span>
               {mainUpdated && (activeRoom.scopeMode ?? "full") === "full" && (
-                <button style={{ borderColor: "var(--accent)" }} title="把主纲最新大纲重新拍进本房间副本（已演标记尽量保留）。不点就永远用旧副本。" onClick={() => void syncSnapshot()}>
+                <button style={{ borderColor: "var(--accent)" }} title="把主纲最新大纲重新拍进本剧组副本（已演标记尽量保留）。不点就永远用旧副本。" onClick={() => void syncSnapshot()}>
                   ⚡ 主纲有更新，同步副本
                 </button>
               )}
@@ -957,7 +957,7 @@ export function TheaterPage() {
             {note && <div className="panel" style={{ fontSize: 12 }}>{note} <button style={{ fontSize: 10 }} onClick={() => setNote(null)}>知道了</button></div>}
             {roomLocked && (
               <div className="panel" style={{ fontSize: 12, borderColor: "#e65100", color: "#e65100" }}>
-                🔒 这个房间正在<b>另一个标签页</b>里使用，本页已置为<b>只读</b>（两边同时聊会互相覆盖历史）。请回到那个标签页继续，或关掉它后重进本房间。
+                🔒 这个剧组正在<b>另一个标签页</b>里使用，本页已置为<b>只读</b>（两边同时聊会互相覆盖历史）。请回到那个标签页继续，或关掉它后重进本剧组。
               </div>
             )}
 
@@ -970,10 +970,10 @@ export function TheaterPage() {
                     <option value="tight">紧凑（强引导快推）</option>
                   </select>
                 </label>
-                <label title="打开后，作品级已确认台账会标注「借自作品级台账」注入；房间自己的正典始终优先">
+                <label title="打开后，作品级已确认台账会标注「借自作品级台账」注入；剧组自己的正典始终优先">
                   <input type="checkbox" checked={activeRoom.config.borrowProjectLedger} onChange={(e) => setConfig({ borrowProjectLedger: e.target.checked })} /> 借作品级台账
                 </label>
-                <label title="场记 agent：读副本/对进度/标节拍/写本房间正典。物理上没有任何修改主纲的工具。">
+                <label title="场记 agent：读副本/对进度/标节拍/写本剧组正典。物理上没有任何修改主纲的工具。">
                   <input type="checkbox" checked={activeRoom.config.agentEnabled ?? true} onChange={(e) => setConfig({ agentEnabled: e.target.checked })} /> 场记 agent
                 </label>
                 <label title="{{user}} 形象：用户名即画像名（v3.1-⑤）；切换即换用户名，历史里旧称呼由「用户实名」指令纠口">
@@ -1042,7 +1042,7 @@ export function TheaterPage() {
                 )}
               </div>
 
-              {/* 右侧：进展清单 + 场记活动 + 房间正典 + 纠偏 */}
+              {/* 右侧：进展清单 + 场记活动 + 剧组正典 + 纠偏 */}
               <div style={{ flex: "1 1 260px", minWidth: 250, display: "grid", gap: 10 }}>
                 {!activeRoom.sandbox && activeRoom.script && activeRoom.script.scenes.length > 0 && (
                   <div className="panel" style={{ maxHeight: 240, overflowY: "auto", fontSize: 12 }}>
@@ -1053,7 +1053,7 @@ export function TheaterPage() {
                         {sc.beats.map((b) => {
                           const st = activeRoom.progress?.[b.id];
                           return (
-                            <label key={b.id} style={{ display: "block", cursor: "pointer" }} title="点一下循环：未演→已演→跳过→未演（只标房间副本）">
+                            <label key={b.id} style={{ display: "block", cursor: "pointer" }} title="点一下循环：未演→已演→跳过→未演（只标剧组副本）">
                               <input type="checkbox" checked={st === "done"} onChange={() => toggleBeat(b.id)} />{" "}
                               <span style={{ textDecoration: st === "skipped" ? "line-through" : undefined, color: st === "skipped" ? "var(--muted)" : undefined }}>
                                 {b.text}

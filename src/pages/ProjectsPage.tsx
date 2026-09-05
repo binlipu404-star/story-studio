@@ -17,7 +17,7 @@ import { TrialPage } from "./TrialPage";
 import { CastPage } from "./CastPage";
 import { LorePage } from "./LorePage";
 
-// v3.1-④：作品工作区不再有「台账」页签——台账整体迁入 🎭 RP 剧场（每房间独立）
+// v3.1-④：作品工作区不再有「台账」页签——台账整体迁入 🎭 RP 剧场（每剧组独立）
 type WsTab = "interview" | "outline" | "trial" | "cast" | "lore";
 const WS_TABS: { id: WsTab; label: string }[] = [
   { id: "interview", label: "构思访谈" },
@@ -110,7 +110,7 @@ export function ProjectsPage() {
   const removeProject = async (p: Project) => {
     if (
       !window.confirm(
-        `删除作品《${p.title}》及其全部数据（大纲/人物/世界书/会话/台账/RP 剧场中挂在本作品下的全部房间与房间正典）？此操作不可恢复。`,
+        `删除作品《${p.title}》及其全部数据（大纲/人物/世界书/会话/台账/RP 剧场中挂在本作品下的全部剧组与剧组正典）？此操作不可恢复。`,
       )
     ) {
       return;
@@ -205,7 +205,7 @@ function ProjectWorkspace({ project, onBack }: { project: Project; onBack: () =>
         setExportMsg("作品不存在（可能已被删除）。");
         return;
       }
-      // 剧场房间与试跑会话同在 sessions 表（projectId 已隔离），随包整体导出
+      // 剧场剧组与试跑会话同在 sessions 表（projectId 已隔离），随包整体导出
       const rooms = sessions.filter((s) => s.kind === "theater");
       const bytes = bundleZipBytes({
         project: proj,
@@ -217,7 +217,7 @@ function ProjectWorkspace({ project, onBack }: { project: Project; onBack: () =>
       });
       const safeTitle = (proj.title || "story").replace(/[\\/:*?"<>|]/g, "_");
       downloadBlob(`${safeTitle}-story-studio.zip`, bytes);
-      setExportMsg(`已导出 ${(bytes.length / 1024).toFixed(0)} KB${rooms.length ? `（含 ${rooms.length} 个剧场房间）` : ""}。`);
+      setExportMsg(`已导出 ${(bytes.length / 1024).toFixed(0)} KB${rooms.length ? `（含 ${rooms.length} 个剧场剧组）` : ""}。`);
     } catch (e) {
       setExportMsg(`导出失败：${errMsg(e)}`);
     } finally {
@@ -225,7 +225,7 @@ function ProjectWorkspace({ project, onBack }: { project: Project; onBack: () =>
     }
   };
 
-  /** 作品级台账的「导去剧场演」：投递后跳顶层剧场页自动开房（剧本=当前全纲快照） */
+  /** 作品级台账的「导去剧场演」：投递后跳顶层剧场页自动开机（剧本=当前全纲快照） */
   const toTheater = () => {
     putHandoff({ kind: "theater", projectId: project.id, nodeId: "" });
     goTab("theater");
@@ -256,7 +256,7 @@ function ProjectWorkspace({ project, onBack }: { project: Project; onBack: () =>
   }, [refreshStats]);
 
   const removeProject = async () => {
-    if (!window.confirm(`删除作品《${project.title}》及其全部数据（大纲/人物/世界书/会话/台账/RP 剧场中挂在本作品下的全部房间与房间正典）？此操作不可恢复。`)) return;
+    if (!window.confirm(`删除作品《${project.title}》及其全部数据（大纲/人物/世界书/会话/台账/RP 剧场中挂在本作品下的全部剧组与剧组正典）？此操作不可恢复。`)) return;
     try {
       await repos.deleteProjectCascade(project.id);
       onBack();
@@ -301,7 +301,7 @@ function ProjectWorkspace({ project, onBack }: { project: Project; onBack: () =>
         <button onClick={() => void exportBundle()} disabled={exporting}>
           {exporting ? "打包中…" : "📦 导出项目包（zip）"}
         </button>
-        <button onClick={toTheater} title="用当前大纲开一个剧场房间（full 模式：能感知这份大纲之后的变化）">
+        <button onClick={toTheater} title="用当前大纲开一个剧场剧组（full 模式：能感知这份大纲之后的变化）">
           🎭 导去剧场演全本
         </button>
         <span className="muted" style={{ fontSize: 12 }}>

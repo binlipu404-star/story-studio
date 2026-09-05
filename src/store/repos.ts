@@ -356,7 +356,7 @@ export async function addProposals(records: LedgerRecord[]): Promise<LedgerRecor
 }
 
 /** 台账列表：可按状态过滤（走 [projectId+status] 复合索引）；按 createdAt 升序。
- *  roomId 给定 → 只返回绑定该房间的（room-scoped 正典）；roomId==="*" → 只返回作品级（roomId 缺失）。 */
+ *  roomId 给定 → 只返回绑定该剧组的（room-scoped 正典）；roomId==="*" → 只返回作品级（roomId 缺失）。 */
 export async function listLedger(projectId: ID, status?: LedgerStatus, roomId?: ID | "*"): Promise<LedgerRecord[]> {
   const rows = status
     ? await db.ledger.where("[projectId+status]").equals([projectId, status]).toArray()
@@ -366,7 +366,7 @@ export async function listLedger(projectId: ID, status?: LedgerStatus, roomId?: 
   return scoped.sort((a, b) => a.createdAt - b.createdAt);
 }
 
-/** 房间正典直写：剧场场记/定时写入用，落 confirmed 且绑定 roomId（该房间独立正典，不污染作品级台账）。 */
+/** 剧组正典直写：剧场场记/定时写入用，落 confirmed 且绑定 roomId（该剧组独立正典，不污染作品级台账）。 */
 export async function addRoomCanon(records: LedgerRecord[]): Promise<LedgerRecord[]> {
   const now = Date.now();
   const rows: LedgerRecord[] = records.map((r) => ({
@@ -398,7 +398,7 @@ export async function editLedger(
   return db.ledger.get(id);
 }
 
-/** 删除单条台账（房间正典面板清理误写事实用；作品级台账慎用，UI 层负责 confirm）。 */
+/** 删除单条台账（剧组正典面板清理误写事实用；作品级台账慎用，UI 层负责 confirm）。 */
 export async function deleteLedger(id: ID): Promise<void> {
   await db.ledger.delete(id);
 }
@@ -430,7 +430,7 @@ export async function saveSession(session: RPSession): Promise<RPSession> {
 
 /**
  * v3.1-⑥ 事务内读-改-写（原子）：f 拿到的是**事务里最新的整行**，返回要落库的整行。
- * 场记/聊天/配置多路并发写同一房间时，所有调用方都走这里就不会互相覆盖
+ * 场记/聊天/配置多路并发写同一剧组时，所有调用方都走这里就不会互相覆盖
  * （谁先谁后取决于调用序；行内容永远基于最新库态合并）。
  */
 export async function updateSession(
@@ -463,7 +463,7 @@ export async function getSession(id: ID): Promise<RPSession | undefined> {
   return db.sessions.get(id);
 }
 
-/** 删除会话（剧场房间删除；连带清掉该房间绑定的台账行，正典随房间消亡）。单事务原子。 */
+/** 删除会话（剧场剧组删除；连带清掉该剧组绑定的台账行，正典随剧组消亡）。单事务原子。 */
 export async function deleteSession(id: ID): Promise<void> {
   await db.transaction("rw", [db.sessions, db.ledger], async () => {
     await db.sessions.delete(id);
@@ -471,7 +471,7 @@ export async function deleteSession(id: ID): Promise<void> {
   });
 }
 
-/** 清空本房间正典（剧场「重新开始」整房重来；不动作品级台账、不动房间行本身）。返回删除条数。 */
+/** 清空本剧组正典（剧场「重新开始」整组重来；不动作品级台账、不动剧组行本身）。返回删除条数。 */
 export async function clearRoomCanon(roomId: ID): Promise<number> {
   const keys = await db.ledger.where("roomId").equals(roomId).primaryKeys();
   await db.ledger.bulkDelete(keys);

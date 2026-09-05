@@ -80,7 +80,7 @@ export const SCRIPT_TOOLS: ToolSpec[] = [
     type: "function",
     function: {
       name: "read_outline",
-      description: "读取房间剧本副本（幕/节拍/伏笔清单，含完成标记）。副本之外你什么大纲也看不到、改不了。",
+      description: "读取剧组剧本副本（幕/节拍/伏笔清单，含完成标记）。副本之外你什么大纲也看不到、改不了。",
       parameters: { type: "object", properties: { scope: { type: "string", enum: ["all", "current"], description: "all=全部副本（可能截断），current=当前幕前后窗口" } } },
     },
   },
@@ -96,7 +96,7 @@ export const SCRIPT_TOOLS: ToolSpec[] = [
     type: "function",
     function: {
       name: "mark_beat",
-      description: "在副本上把某个节拍标记为 done（已演到）或 skipped（明确跳过）。只改房间的副本标记，主纲不受影响。",
+      description: "在副本上把某个节拍标记为 done（已演到）或 skipped（明确跳过）。只改剧组的副本标记，主纲不受影响。",
       parameters: {
         type: "object",
         properties: {
@@ -128,7 +128,7 @@ export const SCRIPT_TOOLS: ToolSpec[] = [
     type: "function",
     function: {
       name: "read_ledger",
-      description: "读本房间正典台账（已确认事实；可关键词过滤）。",
+      description: "读本剧组正典台账（已确认事实；可关键词过滤）。",
       parameters: { type: "object", properties: { query: { type: "string", description: "可选关键词过滤" }, limit: { type: "number", description: "最多条数，默认 30" } } },
     },
   },
@@ -136,7 +136,7 @@ export const SCRIPT_TOOLS: ToolSpec[] = [
     type: "function",
     function: {
       name: "append_ledger",
-      description: "把对话中已发生、值得长期记住的事实写入本房间正典台账（宁缺毋滥，一次调用一条）。",
+      description: "把对话中已发生、值得长期记住的事实写入本剧组正典台账（宁缺毋滥，一次调用一条）。",
       parameters: {
         type: "object",
         properties: {
@@ -154,7 +154,7 @@ export const SCRIPT_TOOLS: ToolSpec[] = [
 export const SCRIPT_KIT_DIRECTIVE = [
   "你有一个「场记工具包」：read_outline / get_progress / mark_beat / where_is_story / next_step / read_ledger / append_ledger。",
   "- 依据对话实际内容使用：演到某拍就 mark_beat(done)；确定发生且值得长记的事实 append_ledger；拿不准位置就先 where_is_story。",
-  "- 一切标记只作用于房间副本；原作大纲由用户在大纲工作台维护，你无权限也无需请求。",
+  "- 一切标记只作用于剧组副本；原作大纲由用户在大纲工作台维护，你无权限也无需请求。",
   "- 不要为用工具而用工具：没有新事实/新进展就不调用。",
 ].join("\n");
 
@@ -164,7 +164,7 @@ export interface ScriptCtx {
   snapshot: ScriptSnapshot;
   progress: Record<string, "done" | "skipped">;
   canon: LedgerRecord[]; // confirmed（含作品级借用标记由调用方决定传入范围）
-  /** 副作用回调（页面实现：改房间 progress / 写台账表 / 记活动流） */
+  /** 副作用回调（页面实现：改剧组 progress / 写台账表 / 记活动流） */
   onMarkBeat?: (beatId: string, status: "done" | "skipped" | "unmark", note: string) => void;
   onAppendLedger?: (item: { type: LedgerType; content: string; actors: string[] }) => void;
 }
@@ -201,7 +201,7 @@ export function runScriptTool(ctx: ScriptCtx, name: string, argsJson: string): T
       const text = scope === "all"
         ? scriptBlock(ctx.snapshot, ctx.progress, adv, 0, 0)
         : scriptBlock(ctx.snapshot, ctx.progress, adv, 1, 2);
-      return { result: text || "（沙盒房间：无剧本副本）" };
+      return { result: text || "（沙盒剧组：无剧本副本）" };
     }
     case "get_progress":
       return {
@@ -218,14 +218,14 @@ export function runScriptTool(ctx: ScriptCtx, name: string, argsJson: string): T
       const exists = ctx.snapshot.scenes.some((sc) => sc.beats.some((b) => b.id === beatId));
       if (!exists) return { result: `副本里没有节拍 ${beatId}。先 read_outline 核对 id。` };
       ctx.onMarkBeat?.(beatId, status, note);
-      return { result: `已记录：节拍 ${beatId} → ${status}${note ? `（${note}）` : ""}。这是房间副本标记，主纲未受影响。` };
+      return { result: `已记录：节拍 ${beatId} → ${status}${note ? `（${note}）` : ""}。这是剧组副本标记，主纲未受影响。` };
     }
     case "where_is_story":
       return { result: adv.nextHint };
     case "next_step": {
-      if (adv.finished) return { result: "副本节拍已全部标记完成。可以向用户提议：收尾本幕/开新房间/去大纲工作台续写后续。" };
+      if (adv.finished) return { result: "副本节拍已全部标记完成。可以向用户提议：收尾本幕/开新剧组/去大纲工作台续写后续。" };
       const cur = adv.currentSceneIndex !== null ? ctx.snapshot.scenes[adv.currentSceneIndex] : null;
-      return { result: cur ? `当前幕「${cur.title}」（目标：${cur.intent || "未填"}）；下一拍：${adv.currentBeatText ?? "？"}` : "（沙盒房间：无剧本下一步）" };
+      return { result: cur ? `当前幕「${cur.title}」（目标：${cur.intent || "未填"}）；下一拍：${adv.currentBeatText ?? "？"}` : "（沙盒剧组：无剧本下一步）" };
     }
     case "read_ledger": {
       const query = typeof args.query === "string" ? args.query.trim() : "";
@@ -242,7 +242,7 @@ export function runScriptTool(ctx: ScriptCtx, name: string, argsJson: string): T
       if (!type || !content) return { result: "参数不合法：需要 type(event|item|relation|foreshadow|worldstate) 与 content。" };
       const actors = Array.isArray(args.actors) ? args.actors.filter((a): a is string => typeof a === "string" && a.trim() !== "") : [];
       ctx.onAppendLedger?.({ type, content, actors });
-      return { result: "已写入本房间正典台账。" };
+      return { result: "已写入本剧组正典台账。" };
     }
     default:
       return { result: `未知工具 ${name}。你只有场记工具包里的七个工具。` };

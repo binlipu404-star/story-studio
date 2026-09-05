@@ -48,7 +48,7 @@ export function isRunning(roomId: string): boolean {
   return runs.get(roomId)?.running === true;
 }
 
-/** 订阅某房间的场记状态（当前快照立即回放一次）；返回退订函数。 */
+/** 订阅某剧组的场记状态（当前快照立即回放一次）；返回退订函数。 */
 export function subscribeAgentRun(roomId: string, fn: Listener): () => void {
   let set = listeners.get(roomId);
   if (!set) {
@@ -70,13 +70,13 @@ function stamp(s: AgentRunState, line: string): void {
 
 /** 页面层注入的落库通道（run 不直接依赖 Dexie，方便测试与复用） */
 export interface OrganizeIO {
-  /** 现读最新房间行（每步落库前重读，避免整行覆盖并发丢字段） */
+  /** 现读最新剧组行（每步落库前重读，避免整行覆盖并发丢字段） */
   loadRoom: (roomId: string) => Promise<RPSession | undefined>;
-  /** 局部更新房间字段（progress / rollingSummary…），绝不覆盖对话 */
+  /** 局部更新剧组字段（progress / rollingSummary…），绝不覆盖对话 */
   patchRoom: (roomId: string, patch: Partial<RPSession>) => Promise<void>;
-  /** 写房间正典（confirmed + roomId 绑定） */
+  /** 写剧组正典（confirmed + roomId 绑定） */
   addCanon: (room: RPSession, items: DigestLedgerItem[]) => Promise<void>;
-  /** 房间正典（read_ledger 与提示词用） */
+  /** 剧组正典（read_ledger 与提示词用） */
   canonOf: (roomId: string) => Promise<LedgerRecord[]>;
   /** 正典变化后通知页面刷新列表 */
   onCanonChanged: (roomId: string) => void;
@@ -91,7 +91,7 @@ export interface OrganizeInput {
   mode: "manual" | "auto";
 }
 
-/** 同房间幂等防重：已在跑就直接返回（切页后再点也不会双跑）。 */
+/** 同剧组幂等防重：已在跑就直接返回（切页后再点也不会双跑）。 */
 export async function startOrganize(input: OrganizeInput): Promise<void> {
   const { roomId, io, sceneTitle, mode } = input;
   if (runs.get(roomId)?.running) return;
@@ -163,7 +163,7 @@ export async function startOrganize(input: OrganizeInput): Promise<void> {
         { role: "system", content: SCRIPT_KIT_DIRECTIVE },
         {
           role: "system",
-          content: `【当前局面】${sceneTitle}（剧本《${fresh0.script?.sourceTitle || "沙盒"}》副本）。\n【房间正典】${canon.length ? `${canon.length} 条已确认事实` : "（空白正典：这是新房间）"}`,
+          content: `【当前局面】${sceneTitle}（剧本《${fresh0.script?.sourceTitle || "沙盒"}》副本）。\n【剧组正典】${canon.length ? `${canon.length} 条已确认事实` : "（空白正典：这是新剧组）"}`,
         },
         {
           role: "user",
@@ -179,16 +179,16 @@ export async function startOrganize(input: OrganizeInput): Promise<void> {
     });
     if (res.stopped === "max_rounds") say("已达轮次上限，剩余下轮继续。");
     if (res.text.trim()) say(`场记小结：${res.text.trim().slice(0, 200)}`);
-    say(`本次标记节拍 ${Object.keys(progress).length} 处（只动房间副本，主纲未受影响）`);
+    say(`本次标记节拍 ${Object.keys(progress).length} 处（只动剧组副本，主纲未受影响）`);
   } catch (e) {
     if (e instanceof ToolsUnsupportedError) {
-      // 降级：无工具的纯摘要整理，digest 直接进房间正典（用户决定②）
+      // 降级：无工具的纯摘要整理，digest 直接进剧组正典（用户决定②）
       state.downgraded = true;
       publish(state);
       try {
         const fresh = await io.loadRoom(roomId);
         if (!fresh) {
-          say("房间已不存在，整理中止。");
+          say("剧组已不存在，整理中止。");
         } else {
           const turns = transcriptOf(fresh.messages);
           const obj = await chatJSON<unknown>(rollingDigestPrompt(fresh.rollingSummary ?? "", turns), { role: "analyzer" });

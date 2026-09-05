@@ -46,7 +46,7 @@ export default async function (t) {
     t.eq(detectMainScriptUpdate(snap, [volume(), chapter(), moved]), true, "2. 幕被改 → true");
     t.eq(detectMainScriptUpdate(snap, [volume(), chapter()]), false, "2. 幕被删 → false（不是变化信号）");
     const sandbox = buildScriptSnapshot("T", [], [], 100);
-    t.eq(detectMainScriptUpdate(sandbox, [scene()]), false, "2. 沙盒房永不提示");
+    t.eq(detectMainScriptUpdate(sandbox, [scene()]), false, "2. 沙盒组永不提示");
   }
 
   // 3. 同步时标记合并：孤儿标记清理、有效标记保留
@@ -119,7 +119,7 @@ export default async function (t) {
     t.eq(scenesOfChapters(nodes, []).length, 0, "7. 空选择");
   }
 
-  // 8. 老房间模式兜底
+  // 8. 老剧组模式兜底
   t.eq(roomScope(undefined), "full", "8. 无字段按 full");
   t.eq(roomScope("chapters"), "chapters", "8. 显式保留");
 }

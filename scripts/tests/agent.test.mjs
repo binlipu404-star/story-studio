@@ -23,7 +23,7 @@ export default async function (t) {
     const names = SCRIPT_TOOLS.map((s) => s.function.name);
     t.eq(names.join(","), "read_outline,get_progress,mark_beat,where_is_story,next_step,read_ledger,append_ledger", "1. 工具面锁定");
     t.ok(!names.some((n) => /outline_write|update_node|edit_node|set_status/i.test(n)), "1. 物理无主纲写工具");
-    t.ok(SCRIPT_KIT_DIRECTIVE.includes("只作用于房间副本"), "1. 指令块声明边界");
+    t.ok(SCRIPT_KIT_DIRECTIVE.includes("只作用于剧组副本"), "1. 指令块声明边界");
   }
 
   // 2. SSE tool_calls 分片累积（首片 id+name，后续 arguments 拼接；多调用按 index）

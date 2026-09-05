@@ -210,17 +210,17 @@ export interface RPMessage {
   notes?: string[]; // 场记 agent 挂在本条上的活动（工具调用/进度标记），随消息持久
 }
 
-// ---------- RP 剧场：剧本副本与房间（v3 剧场独立化） ----------
+// ---------- RP 剧场：剧本副本与剧组（v3 剧场独立化） ----------
 export type TheaterPace = "tight" | "loose"; // 紧凑=强引导快推 / 舒缓=弱引导允许跑题
 export type TheaterScope = "full" | "chapters"; // 全剧（感知主纲更新）/ 章选（试跑，不敏感）
 export type TheaterSandbox = boolean;
 
 export interface ScriptBeatRef {
-  id: string; // 主纲 Beat.id 的副本引用（只读引用；标记只写房间 progress）
+  id: string; // 主纲 Beat.id 的副本引用（只读引用；标记只写剧组 progress）
   text: string;
 }
 
-/** 房间创建/同步时的剧本快照：此后聊天只认副本，主纲改动不自动渗透 */
+/** 剧组创建/同步时的剧本快照：此后聊天只认副本，主纲改动不自动渗透 */
 export interface ScriptSnapshot {
   sourceTitle: string;
   takenAt: number;
@@ -248,22 +248,22 @@ export interface RPSession {
   status: "testing" | "canon" | "abandoned";
   createdAt: number;
   updatedAt: number;
-  // ---- RP 剧场房间扩展（全部可选：旧试跑会话天然不属于剧场） ----
-  kind?: "theater"; // 有 = 剧场房间（左栏列表按此过滤）
-  name?: string; // 房间名（列表展示/重命名）
+  // ---- RP 剧场剧组扩展（全部可选：旧试跑会话天然不属于剧场） ----
+  kind?: "theater"; // 有 = 剧场剧组（左栏列表按此过滤）
+  name?: string; // 剧组名（列表展示/重命名）
   pace?: TheaterPace;
   scopeMode?: TheaterScope;
-  sandbox?: TheaterSandbox; // 自由即兴房：无剧本
-  script?: ScriptSnapshot; // 剧本副本（沙盒房=空 scenes）
+  sandbox?: TheaterSandbox; // 自由即兴组：无剧本
+  script?: ScriptSnapshot; // 剧本副本（沙盒组=空 scenes）
   progress?: Record<string, "done" | "skipped">; // 副本节拍完成标记（key=ScriptBeatRef.id；永不回写主纲）
   config?: {
-    // 房间级配置快照（开台时由全局 prefs 落一份；面板可改，切房间互不污染）
+    // 剧组级配置快照（开台时由全局 prefs 落一份；面板可改，切剧组互不污染）
     charId: string; // "" = 旁白无卡
     personaId: string; // "" = 不设
     budgetTokens: number;
     reserveTokens: number;
     ledgerCadence: number; // 每 N 个用户楼层自动整理台账；0=关；1=每楼自动（v3.1 默认）
-    borrowProjectLedger: boolean; // 本房间正典之外借用作品级台账
+    borrowProjectLedger: boolean; // 本剧组正典之外借用作品级台账
     chapterIds?: ID[]; // chapters 模式的所选章（full/sandbox 无）
     agentEnabled?: boolean; // 场记工具（undefined=true）
     cadenceMark?: number; // 上次楼层整理时的用户楼层数（触发游标）
@@ -283,7 +283,7 @@ export interface LedgerRecord {
   provenance?: { sessionId: ID; msgId: ID }; // 溯源：产生它的 RP 消息
   status: LedgerStatus;
   createdAt: number;
-  roomId?: ID; // 剧场房间正典绑定：有 = 只属于该房间（新房间从空白正典开始）；无 = 作品级台账
+  roomId?: ID; // 剧场剧组正典绑定：有 = 只属于该剧组（新剧组从空白正典开始）；无 = 作品级台账
 }
 
 // ---------- 用户画像（全局，跨作品；{{user}} 在不同故事中的形象） ----------

@@ -1,8 +1,8 @@
 // ============================================================
-// RP 剧场房间装配（v3 核心；纯逻辑，可 Node 测试）
+// RP 剧场剧组装配（v3 核心；纯逻辑，可 Node 测试）
 //
-// 房间 = 一条 kind:"theater" 的 RPSession：名字/节奏/模式/剧本副本/进展/配置快照。
-// 装配只认房间自带的数据（副本+房间正典），主纲与作品级台账默认渗透不进来——
+// 剧组 = 一条 kind:"theater" 的 RPSession：名字/节奏/模式/剧本副本/进展/配置快照。
+// 装配只认剧组自带的数据（副本+剧组正典），主纲与作品级台账默认渗透不进来——
 // full 模式的「同步」是用户显式按的按钮，不是隐式读取。
 // ============================================================
 
@@ -26,7 +26,7 @@ import { exportCardV2 } from "../st/card.js";
 
 const EMPTY_SNAP: ScriptSnapshot = { sourceTitle: "", takenAt: 0, nodesUpdatedAt: 0, scenes: [] };
 
-/** 房间当前该演副本里的哪一幕：第一个未演尽的幕；全尽=最后一幕；沙盒=null */
+/** 剧组当前该演副本里的哪一幕：第一个未演尽的幕；全尽=最后一幕；沙盒=null */
 export function roomCurrentScene(room: RPSession): ScriptSnapshot["scenes"][number] | null {
   const snap = room.script ?? EMPTY_SNAP;
   if (!snap.scenes.length) return null;
@@ -38,10 +38,10 @@ export function roomCurrentScene(room: RPSession): ScriptSnapshot["scenes"][numb
 export interface RoomAssemblyInput {
   room: RPSession;
   project: Project | null;
-  characters: Character[]; // 房间所属作品的人物
+  characters: Character[]; // 剧组所属作品的人物
   persona?: Persona; // 配置里选中的画像（可空）
   loreEntries: LoreEntry[]; // 已启用词条
-  roomCanon: LedgerRecord[]; // 本房间 confirmed 正典（roomId 绑定）
+  roomCanon: LedgerRecord[]; // 本剧组 confirmed 正典（roomId 绑定）
   projectCanon?: LedgerRecord[]; // 作品级 confirmed（仅 borrowProjectLedger 时传入）
 }
 
@@ -74,8 +74,8 @@ function pseudoScene(sc: ScriptSnapshot["scenes"][number]): import("../core/type
 }
 
 /**
- * 房间装配：产出 RpSetup+greeting（与试跑包同一管线）。
- * 台账块 = 房间正典快照（+可选借用作品级，标注来源）+ 副本伏笔欠账。
+ * 剧组装配：产出 RpSetup+greeting（与试跑包同一管线）。
+ * 台账块 = 剧组正典快照（+可选借用作品级，标注来源）+ 副本伏笔欠账。
  */
 export function assembleRoom(input: RoomAssemblyInput): RoomAssembly {
   const { room, project, characters, persona, loreEntries, roomCanon, projectCanon } = input;
@@ -85,7 +85,7 @@ export function assembleRoom(input: RoomAssemblyInput): RoomAssembly {
   const advance = storyAdvance(snap, progress);
   const cur = roomCurrentScene(room);
 
-  // ---- 台账块（房间独立正典为核心） ----
+  // ---- 台账块（剧组独立正典为核心） ----
   const canonParts: string[] = [];
   const roomSnap = ledgerSnapshot(roomCanon, { maxChars: 700 });
   if (roomSnap.text) canonParts.push(roomSnap.text);
@@ -110,7 +110,7 @@ export function assembleRoom(input: RoomAssemblyInput): RoomAssembly {
       .filter(Boolean)
       .join("\n") || undefined;
   const loreSettings = project?.lorebook ?? { scanDepth: 2, tokenBudget: 2048, recursiveScanning: true };
-  // v3.1-⑤ 用户名取决于画像：有画像用画像名，无画像回落房间存量名（旧房兼容）
+  // v3.1-⑤ 用户名取决于画像：有画像用画像名，无画像回落剧组存量名（旧组兼容）
   const uname = persona?.name?.trim() || room.userName || "读者";
   const personaBlock = persona ? personaPromptBlock(persona) : undefined;
   // 玩家实名指令：画像名与对话历史里的旧称呼（老 greeting/旧用户名）冲突时，以此为准
@@ -125,9 +125,9 @@ export function assembleRoom(input: RoomAssemblyInput): RoomAssembly {
   const lead: Character | null = cfg && cfg.charId ? characters.find((c) => c.id === cfg.charId) ?? null : null;
   const charNameOf = (c: Character): string => c.name || "角色";
 
-  // ---- 沙盒房：无副本，旁白自由开场 ----
+  // ---- 沙盒组：无副本，旁白自由开场 ----
   if (!cur) {
-    const greeting = `暮色四合，故事尚未落笔。（自由即兴房间：没有剧本约束，${uname} 的每个动作都会留下痕迹。）`;
+    const greeting = `暮色四合，故事尚未落笔。（自由即兴剧组：没有剧本约束，${uname} 的每个动作都会留下痕迹。）`;
     return {
       setup: {
         charName: "旁白",
@@ -135,19 +135,19 @@ export function assembleRoom(input: RoomAssemblyInput): RoomAssembly {
         description: worldview ?? "自由即兴场景：以环境反应与配角插叙回应 {{user}}。",
         personaBlock,
         userNameHint,
-        authorNote: "（自由即兴房：无剧本。保持世界一致，把主动权交给 {{user}}。）",
+        authorNote: "（自由即兴组：无剧本。保持世界一致，把主动权交给 {{user}}。）",
         ledgerBlock,
         pace: room.pace,
         loreEntries: enabled,
         loreSettings,
       },
       greeting,
-      baseNote: "（自由即兴房：无剧本。保持世界一致，把主动权交给 {{user}}。）",
+      baseNote: "（自由即兴组：无剧本。保持世界一致，把主动权交给 {{user}}。）",
       sceneTitle: "自由即兴",
     };
   }
 
-  // ---- 剧本房：与 ST 试跑包同一装配管线（greeting=当前幕目标+节拍+前情） ----
+  // ---- 剧本组：与 ST 试跑包同一装配管线（greeting=当前幕目标+节拍+前情） ----
   const chapterTitle = cur.path.split(" › ").slice(0, -2).join(" › ") || undefined;
   const castNames = Array.from(new Set(characters.map((c) => charNameOf(c))));
   const scene = pseudoScene(cur);
@@ -155,7 +155,7 @@ export function assembleRoom(input: RoomAssemblyInput): RoomAssembly {
     ? ({ ...pseudoScene(cur), id: "", title: chapterTitle, level: "chapter", intent: "", beats: [] } as unknown as import("../core/types").OutlineNode)
     : undefined;
   const built = buildTrialPack({
-    packName: `${room.name ?? "房间"} · ${cur.title}`,
+    packName: `${room.name ?? "剧组"} · ${cur.title}`,
     scene,
     chapter,
     castNames,
@@ -220,7 +220,7 @@ export function assembleRoom(input: RoomAssemblyInput): RoomAssembly {
   };
 }
 
-/** 新建房间行（不落库；id 由调用方 repos.uid() 传入保持可测） */
+/** 新建剧组行（不落库；id 由调用方 repos.uid() 传入保持可测） */
 export function newRoom(input: {
   id: string;
   projectId: string;
@@ -268,7 +268,7 @@ export function newRoom(input: {
   };
 }
 
-/** 房间列表展示排序：活跃倒序 */
+/** 剧组列表展示排序：活跃倒序 */
 export function roomSort(rooms: RPSession[]): RPSession[] {
   return [...rooms].sort((a, b) => b.updatedAt - a.updatedAt);
 }

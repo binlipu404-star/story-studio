@@ -1,6 +1,7 @@
 # Story Studio — 设计说明与自我剖析（审阅版）
 
-> 版本锚点：git HEAD `94832dc`（UI/交互优化轮后）。src 共 48 个 ts/tsx 文件、约 1.47 万行；逻辑测试基线 **716 断言 / 21 个测试文件**。纪律仍是"只增不减"——本轮 718→716 的唯一减少来自删除死函数 `rpSystemPrompt` 附带的 2 条其专属断言，属删死代码的合理收缩，非覆盖退化。
+> 版本锚点：git HEAD ≥ `f9427cd`（「重新开始」整组重来 + 术语统一轮）。src 共 48 个 ts/tsx 文件、约 1.47 万行；逻辑测试基线 **716 断言 / 21 个测试文件**。纪律仍是"只增不减"——此前 718→716 的唯一减少来自删除死函数 `rpSystemPrompt` 附带的 2 条其专属断言，属删死代码的合理收缩，非覆盖退化。
+> **术语对照**：产品把剧场的长期 RP 单元称为**「剧组」**（旧称「房间」，UI/文档已全量更名）。代码标识符与持久化键**保留 room 词根不动**（`activeRoom`/`queueRoomWrite`/`RPSession.kind:"theater"`/`ledger.roomId`/`prefs.lastRoomId` 等——改持久键需数据迁移，收益低风险高，明确不做）。读到「剧组」↔`room*` 并存即是此决策，不是遗漏。派生动词随隐喻走：开房→**开机**、整房重来→**整组重来**。
 > 本文档面向接手审阅的 AI/工程师。所有陈述均以仓库代码为准，标注了文件与行级线索；第 12 节是自认缺陷清单，请优先审阅该节。
 > 配套文件：`docs/ROADMAP.md`（里程碑史）、`README.md`（入口）、仓库根 `验收清单.md`（人工验收步骤，含 v3.1 手测清单）。
 
@@ -14,7 +15,7 @@
 
 1. **三条事实轴分离**：大纲树 = "意图"的唯一事实源；台账 = "已发生事实"的唯一事实源；RP 对话记录 = 底稿（原始素材）。三者各有独立生命周期，禁止互相静默改写。
 2. **提案制**：一切 AI 产出先进 `proposed`，用户确认（`decide`）后才 `confirmed` 生效。`flow/snapshot.ts` 头注释明确：**只有 confirmed 台账进快照/欠账判定——未裁决的不是事实**。（已知张力见 §12.8：场记降级路径的例外。）
-3. **副本隔离**（v3 剧场独立化的核心决策）：RP 房间只认剧本**副本** `ScriptSnapshot`。主纲改动永不自动渗透进房间（full 模式仅提示"可同步"，用户点按才刷新；chapters 模式连提示都无）；节拍完成标记只写 `room.progress`，**永不回写** `OutlineNode`。理由：聊天进行到一半时主纲被改会造成叙事精神分裂，这是产品级 bug 而非特性。
+3. **副本隔离**（v3 剧场独立化的核心决策）：RP 剧组只认剧本**副本** `ScriptSnapshot`。主纲改动永不自动渗透进剧组（full 模式仅提示"可同步"，用户点按才刷新；chapters 模式连提示都无）；节拍完成标记只写 `room.progress`，**永不回写** `OutlineNode`。理由：聊天进行到一半时主纲被改会造成叙事精神分裂，这是产品级 bug 而非特性。
 4. **允许残缺**：任何大纲节点可独立存在、独立试跑；没有"必须先完成访谈才能往下"的门禁。
 
 **产品形态**：五页签单页应用（作品 / 🎭RP 剧场 / 画像 / 设置 / 调试台），无路由库，页签状态在 `App.tsx` 的 `useState` 里；深层页间跳转走两条总线（§8.6/§8.7）。
@@ -71,7 +72,7 @@ core/         types.ts 共享契约 + jobBus.ts 任务总线
 | outlineNodes | id, projectId, [projectId+parentId], [projectId+level] | 大纲树 |
 | characters | id, projectId | 角色（含 ST 卡原文 rawCard） |
 | loreEntries | id, projectId, [projectId+uid] | 世界书词条（ST 语义整型 uid） |
-| sessions | id, projectId, kind | RP 会话/剧场房间（kind="theater" 过滤） |
+| sessions | id, projectId, kind | RP 会话/剧场剧组（kind="theater" 过滤） |
 | ledger | id, projectId, [projectId+status], roomId | 台账（roomId 稀疏索引：作品级行无此键） |
 | personas | id, updatedAt | 用户画像（全局跨作品，v2 增） |
 | meta | key | 元数据（v4 增：FSA 目录句柄等，句柄作纯 value 不建索引） |
@@ -90,7 +91,7 @@ core/         types.ts 共享契约 + jobBus.ts 任务总线
 - **OutlineNode**：四级 level（volume/chapter/scene/beat）、order 排序、intent 叙事目的、beats、cast、foreshadows（setup/payoffIn/status）、status 五态（idea→draft→refined→tested→locked，`flow/outline.ts:canTransition` 定义合法迁移）、revision 计数。
 - **Character**：profile 五件套 + greeting/mesExample + `rawCard` 原样保留（**roundtrip 无损原则**：导入的 ST 卡导出时应一致）。曾有 `state`（台账动态状态摘要）与 `nick`（{{char}} 昵称）两字段，因无生产者/消费者已于 94832dc 删除，见 §12.2。
 - **LoreEntry**：完整 ST 语义映射（keys/secondaryKeys/constant/selective/caseSensitive/matchWholeWord/position/order/depth/sticky/group/scoring 等，见 types L111-138）。
-- **RPSession = "房间"**（§7.2 细说）：基础字段（cast/userName/messages/rollingSummary/status）+ v3 房间字段（kind/name/pace/scopeMode/sandbox/script/progress/config 快照）+ v3.1 增 `messagesArchive`（折叠留底）与 `RPMessage.reasoning/notes`。
+- **RPSession = "剧组"**（§7.2 细说）：基础字段（cast/userName/messages/rollingSummary/status）+ v3 剧组字段（kind/name/pace/scopeMode/sandbox/script/progress/config 快照）+ v3.1 增 `messagesArchive`（折叠留底）与 `RPMessage.reasoning/notes`。
 - **LedgerRecord**：五类 type（event/item/relation/foreshadow/worldstate）+ actors（**名字字符串，无外键**）+ provenance{sessionId,msgId} 溯源 + roomId 绑定。
 - **Persona**：全局画像，isDefault 全局至多一条（`repos.setDefaultPersona` 保证）。
 - **AppConfig**：writer/analyzer 双端点（baseURL/model/apiKey/temperature/maxTokens），localStorage 持久，**不进 Dexie**。
@@ -104,7 +105,7 @@ core/         types.ts 共享契约 + jobBus.ts 任务总线
 | `ss.jump.{theater,recap,correction}` | flow/handoff.ts | 一次性投递箱（消费即删，TTL 10min） |
 | `ss.progress.*` | flow/progress.ts | 页面进度记忆（仅 id/小草稿；隐私模式即失，已知边界） |
 
-**prefs 与房间 config 的关系**（易误解点）：prefs 是"下次开新房的初值"；房间 `config` 是开台时落下的**快照**，之后各改各的、互不污染——这是"切房间配置不串"的实现根基。
+**prefs 与剧组 config 的关系**（易误解点）：prefs 是"下次开新组的初值"；剧组 `config` 是开台时落下的**快照**，之后各改各的、互不污染——这是"切剧组配置不串"的实现根基。
 
 ---
 
@@ -148,8 +149,8 @@ core/         types.ts 共享契约 + jobBus.ts 任务总线
 | card | 角色卡 | NEVER | description/personality/scenario 拼合 |
 | persona | 用户画像 | **30** | 可裁！`【{{user}}（由用户扮演）】` |
 | userNameHint | 用户实名 | **NEVER** | v3.1-⑤ 补强：画像名与历史旧称呼冲突时纠口 |
-| ledger | 台账快照 | 40 | 房间正典 |
-| script | 剧本副本 | 45 | 沙盒房无 |
+| ledger | 台账快照 | 40 | 剧组正典 |
+| script | 剧本副本 | 45 | 沙盒组无 |
 | examples | 对话范例 | **5** | 第一个被裁；带"禁止逐字复述"护栏 |
 | loreAfter | 世界书·补充 | 15 | |
 | authorNote | 作者注释 | NEVER | 标注"优先级最高但不得违反以上规则" |
@@ -166,25 +167,25 @@ core/         types.ts 共享契约 + jobBus.ts 任务总线
 
 ### 6.4 滚动摘要
 
-`planRollingSummary(turns, {threshold, keep})` 纯函数决定折叠分界（RpRunner 侧参数 ROLL_THRESHOLD=2500 tokens / ROLL_KEEP=8）；折叠时 analyzer 走 rollingDigestPrompt：产新 summary + 抽取台账事实（`sanitizeDigest` 清洗 → onDigest 回调入房间正典）。**v3.1-⑥ 后折叠不删原文**：被折回合挪入 `RPSession.messagesArchive`（只增，永不回注对话）。
+`planRollingSummary(turns, {threshold, keep})` 纯函数决定折叠分界（RpRunner 侧参数 ROLL_THRESHOLD=2500 tokens / ROLL_KEEP=8）；折叠时 analyzer 走 rollingDigestPrompt：产新 summary + 抽取台账事实（`sanitizeDigest` 清洗 → onDigest 回调入剧组正典）。**v3.1-⑥ 后折叠不删原文**：被折回合挪入 `RPSession.messagesArchive`（只增，永不回注对话）。
 
 ### 6.5 已知张力（v3.1-⑤ 的成因，用户实际报障）
 
-历史消息发给模型时只有 `{role, content}`——**turn.name 不进请求体**（rp.ts L277-283）。名字的全部影响力来自：system 各节宏（新鲜、正确）+ 历史正文里的散文式称呼（落库、可能陈旧）。旧房间/旧画像时代的称呼被几十楼历史反复示范，对模型的示范效应压过单条 system 指令——这就是"AI 不认人设名"的机理。缓解 = `userNameHint`（NEVER 级指令：历史称呼是旧记录、从现在起统一改口、正文不许解释改名）。**缓解而非根治**：落库历史正文不改写（那是记录本体）；根治手段是导出留底后"重新开始"。审阅可评估：往历史消息注入 name、或改写旧正文，都曾被考虑并因"污染记录/破坏 roundtrip 原则"否决。
+历史消息发给模型时只有 `{role, content}`——**turn.name 不进请求体**（rp.ts L277-283）。名字的全部影响力来自：system 各节宏（新鲜、正确）+ 历史正文里的散文式称呼（落库、可能陈旧）。旧剧组/旧画像时代的称呼被几十楼历史反复示范，对模型的示范效应压过单条 system 指令——这就是"AI 不认人设名"的机理。缓解 = `userNameHint`（NEVER 级指令：历史称呼是旧记录、从现在起统一改口、正文不许解释改名）。**缓解而非根治**：落库历史正文不改写（那是记录本体）；根治手段是导出留底后"重新开始"。审阅可评估：往历史消息注入 name、或改写旧正文，都曾被考虑并因"污染记录/破坏 roundtrip 原则"否决。
 
 ---
 
 ## 7. RP 剧场（v3 独立化 + v3.1 安全加固）——最大子系统
 
-### 7.1 房间模型
+### 7.1 剧组模型
 
-剧场是**跨作品的独立页签**：`RPSession.kind==="theater"` 的房间列表（左栏），每房间自带：剧本副本 script、推进 progress、正典（ledger.roomId 绑定）、config 快照（charId/personaId/预算/cadence/borrowProjectLedger/chapterIds/agentEnabled/cadenceMark）。三态模式：`full`（全本副本+感知主纲更新提示）、`chapters`（选章副本、对主纲不敏感——试跑用）、`sandbox`（无剧本自由即兴，greeting 为模板生成）。`flow/theater.ts:assembleRoom` 三路径装配出 `RpSetup+greeting`（lead 人卡路径 / 旁白路径=合成叙述者指令 / 沙盒路径），并注入 scriptBlock（副本+进展备忘 progressMemoText）与 ledgerBlock（本房间正典，可另借作品级）。
+剧场是**跨作品的独立页签**：`RPSession.kind==="theater"` 的剧组列表（左栏），每剧组自带：剧本副本 script、推进 progress、正典（ledger.roomId 绑定）、config 快照（charId/personaId/预算/cadence/borrowProjectLedger/chapterIds/agentEnabled/cadenceMark）。三态模式：`full`（全本副本+感知主纲更新提示）、`chapters`（选章副本、对主纲不敏感——试跑用）、`sandbox`（无剧本自由即兴，greeting 为模板生成）。`flow/theater.ts:assembleRoom` 三路径装配出 `RpSetup+greeting`（lead 人卡路径 / 旁白路径=合成叙述者指令 / 沙盒路径），并注入 scriptBlock（副本+进展备忘 progressMemoText）与 ledgerBlock（本剧组正典，可另借作品级）。
 
 ### 7.2 场记 agent（v3 的"管家"）——物理最小权限设计
 
-- **7 工具白名单**（`flow/agent.ts:SCRIPT_TOOLS`）：read_outline（只读**副本**）/ get_progress / mark_beat（只写 room.progress）/ where_is_story / next_step / read_ledger / append_ledger（写房间正典）。**没有任何修改主纲的工具存在**——"场记不改主纲"不是靠提示词恳求，是靠工具面板上根本没有那把枪（SCRIPT_KIT_DIRECTIVE 同时向模型声明此边界）。
+- **7 工具白名单**（`flow/agent.ts:SCRIPT_TOOLS`）：read_outline（只读**副本**）/ get_progress / mark_beat（只写 room.progress）/ where_is_story / next_step / read_ledger / append_ledger（写剧组正典）。**没有任何修改主纲的工具存在**——"场记不改主纲"不是靠提示词恳求，是靠工具面板上根本没有那把枪（SCRIPT_KIT_DIRECTIVE 同时向模型声明此边界）。
 - `runScriptTool(ctx, name, argsJson)` 纯函数执行器：参数校验、错误文本回给模型自我修正，Node 可测（agent.test.mjs 30 断言）。
-- **`flow/agentrun.ts`：模块级 run 注册表**（v3.1-① 的解法）。切顶层页签会卸载 TheaterPage——老实现里整理任务死在组件闭包里。现在 run 挂在模块级 `Map<roomId, AgentRunState>` 上：每个工具调用**即时**落库（经注入的 `OrganizeIO` 通道，不依赖组件存活）；页面重挂载 `subscribeAgentRun` 即重连活动流（当前步全量回放）；同房间幂等防双跑；steps 环形缓冲 60 条。依赖全部注入（io + chatTools），本模块不碰 React 不碰 Dexie——这是全库依赖注入最干净的一处。
+- **`flow/agentrun.ts`：模块级 run 注册表**（v3.1-① 的解法）。切顶层页签会卸载 TheaterPage——老实现里整理任务死在组件闭包里。现在 run 挂在模块级 `Map<roomId, AgentRunState>` 上：每个工具调用**即时**落库（经注入的 `OrganizeIO` 通道，不依赖组件存活）；页面重挂载 `subscribeAgentRun` 即重连活动流（当前步全量回放）；同剧组幂等防双跑；steps 环形缓冲 60 条。依赖全部注入（io + chatTools），本模块不碰 React 不碰 Dexie——这是全库依赖注入最干净的一处。
 - 轮次：手动 maxRounds=4 / 自动=3；喂最近 24 条非空消息。`ToolsUnsupportedError` → **降级**：rollingDigestPrompt 纯摘要，抽取的台账**直接 confirmed 进正典**（用户明示决策，但违背公理 2——见 §12.8）。
 
 ### 7.3 楼层定时
@@ -193,13 +194,13 @@ core/         types.ts 共享契约 + jobBus.ts 任务总线
 
 ### 7.4 本地自动写盘（`flow/fsauto.ts`）
 
-File System Access API 目录句柄存 Dexie meta（刷新后重连需用户手势授权——浏览器硬约束）。`RoomDiskWriter` 类：**每房间串行写链** + 去抖 + 同名临时文件原子 rename + 句柄失效自动重连；`doWrite` 返回 `Promise<boolean>`，失败写回 pending 队列下轮重试（v3.1 修补）。文件名 `roomFileName(name, roomId)` 消毒去撞名。不支持的浏览器（Firefox/Safari）整体降级为手动导出 jsonl。
+File System Access API 目录句柄存 Dexie meta（刷新后重连需用户手势授权——浏览器硬约束）。`RoomDiskWriter` 类：**每剧组串行写链** + 去抖 + 同名临时文件原子 rename + 句柄失效自动重连；`doWrite` 返回 `Promise<boolean>`，失败写回 pending 队列下轮重试（v3.1 修补）。文件名 `roomFileName(name, roomId)` 消毒去撞名。不支持的浏览器（Firefox/Safari）整体降级为手动导出 jsonl。
 
 ### 7.5 v3.1 写安全架构（⑥——本库最近一次、也是最重要的攻坚）
 
 失血史（审计提交 9e454eb 修了 9 处）：流式/并发/切页任一时序都可能让"旧整行覆盖新行"。现行不变量集（全部在 TheaterPage/RpRunner/repos 三层协同）：
 
-1. **单链串行**：所有房间写必须走 `queueRoomWrite(roomId, fn)`（TheaterPage L301，Map<roomId, Promise 链>）——同一房间的写永不交叠。
+1. **单链串行**：所有剧组写必须走 `queueRoomWrite(roomId, fn)`（TheaterPage L301，Map<roomId, Promise 链>）——同一剧组的写永不交叠。
 2. **读改写事务**：链内一律 `repos.updateSession(id, cur => …)`（repos L436，Dexie 事务内基于**最新行**合并），禁止拿着页面渲染态整行 save。
 3. **截断守卫**：`suspiciousShrink(base, msgs, allowClear, allowFold)`（TheaterPage L364）：新消息数明显少于库内（超过 max(2, 50%)）且未获显式放行 → **拒写**并提示。`onPersist(turns, summary, allowClear, allowFold)` 四参透传——restart（用户确认清空）给 allowClear，折叠给 allowFold，其余路径恒 false。
 4. **折叠留底**：allowFold 时被折回合并入 `messagesArchive`（TheaterPage L383-391，按 id 去重追加，永不回注）。
@@ -207,17 +208,17 @@ File System Access API 目录句柄存 Dexie meta（刷新后重连需用户手�
 6. **双标签页锁**：`navigator.locks.request('ss-rp-room-'+id, {ifAvailable:true})`（TheaterPage L152-159）拿不到 → 整页**只读** + 🔒 横幅 + RpRunner disabled。**不支持 locks 的浏览器不拦（老行为）**——已知边界。
 7. **流式半句保护**：autosave 600ms 去抖 + pagehide/visibilitychange 立即 flush；regen 失败路径 `preserve` 参数还原现场，末条为 char 时转 swipe 候选（边角修复 0ecf190）。
 8. **greeting 重水合守卫**（M4）：greeting prop 变化但本地已有用户楼层（id 集比对）→ 跳过重水合，不吞对话。
-9. **删除保护**：删房间先自动导出 jsonl 再 confirm；删末条消息 confirm。
+9. **删除保护**：删剧组先自动导出 jsonl 再 confirm；删末条消息 confirm。
 
 **审阅要点**：这 9 条只有 1/2/3/4/5 有纯逻辑测试间接覆盖（经由可测函数），6-9 活在 React 生命周期里**无自动化测试**（§12.15）。
 
 ### 7.6 用户名 = 画像名（⑤）
 
-数据流：`assembleRoom` 每轮现算 `uname = persona?.name?.trim() || room.userName || "读者"`（theater.ts L114），喂 setup.userName、宏、greeting 模板、userNameHint。UI 侧配置条有画像下拉（切换即写 personaId **并同步 userName**，v3.1-⑤ 补）。`AppConfig.userName` 已从类型删除（types L318 注释）。残留语义债：`room.userName` 回落链在"画像被删/personaId 为空"时仍可能供出陈旧名——`|| room.userName` 是旧房间兼容与 staleness 风险的同一体（§12.6）。
+数据流：`assembleRoom` 每轮现算 `uname = persona?.name?.trim() || room.userName || "读者"`（theater.ts L114），喂 setup.userName、宏、greeting 模板、userNameHint。UI 侧配置条有画像下拉（切换即写 personaId **并同步 userName**，v3.1-⑤ 补）。`AppConfig.userName` 已从类型删除（types L318 注释）。残留语义债：`room.userName` 回落链在"画像被删/personaId 为空"时仍可能供出陈旧名——`|| room.userName` 是旧剧组兼容与 staleness 风险的同一体（§12.6）。
 
 ### 7.7 剧场 UI 交互清单（TheaterPage 1105 行 + RpRunner 696 行 + RoomLedgerPanel 260 行）
 
-左栏：新建（三态模式表单）/切换/重命名/删除（自动导出）/⬇jsonl 导出/进度记忆。配置条：节奏 / 借作品级台账 / 场记 agent 开关 / **画像** / 楼层定时 / 正典计数。右栏 RoomLedgerPanel：房间正典列表 + 作品级提案裁决区 + "引入作品正典"桥。聊天区（RpRunner）：token 预算条（可编辑，onBudgetChange 500ms 去抖落房间+prefs）/ system 预览 / 🧠 思维链折叠（reasoning + 场记 notes）/ swipe ↔ / 任意楼层编辑 / 删末条 / 重新生成 / 折叠摘要 / 重新开始 / 带回复盘 / 纠偏注入（限 3 条自动退旧）。
+左栏：新建（三态模式表单）/切换/重命名/删除（自动导出）/⬇jsonl 导出/进度记忆。配置条：节奏 / 借作品级台账 / 场记 agent 开关 / **画像** / 楼层定时 / 正典计数。右栏 RoomLedgerPanel：剧组正典列表 + 作品级提案裁决区 + "引入作品正典"桥。聊天区（RpRunner）：token 预算条（可编辑，onBudgetChange 500ms 去抖落剧组+prefs）/ system 预览 / 🧠 思维链折叠（reasoning + 场记 notes）/ swipe ↔ / 任意楼层编辑 / 删末条 / 重新生成 / 折叠摘要 / 重新开始 / 带回复盘 / 纠偏注入（限 3 条自动退旧）。
 
 ---
 
@@ -281,7 +282,7 @@ AI 开放式访谈边谈边长草稿：`interviewSystemPrompt` 要求模型输�
 ## 11. 性能与容量已知特征
 
 - matcher 每轮全史重放 sticky/cooldown 状态机（O(历史长×词条数)）——百楼级无感，千楼未压测。
-- 房间 messages 整数组随行读写：几百楼 + reasoning 后单行可 >1MB，Dexie 结构化克隆可承受但 autosave 600ms 去抖是必要的。
+- 剧组 messages 整数组随行读写：几百楼 + reasoning 后单行可 >1MB，Dexie 结构化克隆可承受但 autosave 600ms 去抖是必要的。
 - estimateTokens 与真实端点分词误差 ±20~40%，预算条仅供预览。
 
 ---
@@ -302,7 +303,7 @@ AI 开放式访谈边谈边长草稿：`interviewSystemPrompt` 要求模型输�
 9. 台账 actors 无外键：角色改名后新旧事实的 actors 字符串不聚合，欠账/时间线的"相关者"过滤会漏。
 
 **平台边界（均为环境硬约束下的降级，非代码缺陷但要写进说明书）**
-10. `navigator.locks` 不可用（Firefox/Safari/旧 Edge）→ 双标签页同房间**无保护**，回到 last-write-wins。
+10. `navigator.locks` 不可用（Firefox/Safari/旧 Edge）→ 双标签页同剧组**无保护**，回到 last-write-wins。
 11. FSA 仅 Chromium；重授权需用户手势；多标签页共享目录句柄"最后关闭者赢"。
 12. CORS 限制：不允许跨源的推理端点不可用（无代理层，无桌面壳）。
 13. API key 明文持久在 localStorage（`story-studio.config`）——纯浏览器形态无秘密保管层，共用机器即共见；桌面壳/后端代理是根治路径（见 §2.3 边界）。
@@ -324,9 +325,9 @@ npm run test:fixtures  # 用 docs/fixtures 下真实 ST 样本跑解析器
 git log --oneline      # 21 个提交 = 完整编年史（45ef4ab → 94832dc）
 ```
 
-人工路径：README「快速开始」→ 设置页填一个 OpenAI 兼容端点 → 作品页新建→访谈→大纲→试跑导包；剧场页新建房间→聊天→观察场记活动流与 token 预算条。
+人工路径：README「快速开始」→ 设置页填一个 OpenAI 兼容端点 → 作品页新建→访谈→大纲→试跑导包；剧场页新建剧组→聊天→观察场记活动流与 token 预算条。
 
-高价值质询点（我们自检时最不确定的三处）：①§7.5 不变量在"regen 中切页签再切回"组合下的真实表现；②matcher sticky/cooldown 全史重放与 ST 实际语义的最后偏差；③userNameHint 纠口在长历史房间的实际服从率。
+高价值质询点（我们自检时最不确定的三处）：①§7.5 不变量在"regen 中切页签再切回"组合下的真实表现；②matcher sticky/cooldown 全史重放与 ST 实际语义的最后偏差；③userNameHint 纠口在长历史剧组的实际服从率。
 
 ---
 
@@ -336,7 +337,7 @@ git log --oneline      # 21 个提交 = 完整编年史（45ef4ab → 94832dc）
 - **store/**：`db.ts` Dexie v4 · `repos.ts` 41 函数门面 · `templates.ts` Bible 字段种子
 - **ai/**：`client.ts` SSE/chat/chatJSON/chatTools/ToolsUnsupportedError · `config.ts` 双端点配置 · `prompts.ts` 中文模板全集 · `json.ts` 容错抽取 · `tokenizer.ts` 估算
 - **st/**：`card.ts` 卡解析/导出/PNG · `lorebook.ts` 世界书规范化 · `matcher.ts` 触发引擎 · `chatlog.ts` ST jsonl · `persona.ts` 画像导入
-- **flow/**：`rp.ts` RP 引擎 · `theater.ts` 房间装配 · `script.ts` 副本/推进 · `agent.ts` 工具白名单/执行器 · `agentrun.ts` run 注册表 · `snapshot.ts` 台账快照 · `interview.ts` Bible 合并 · `outline.ts` 树逻辑/复盘 · `outlinebook.ts` 剧情世界书 · `trialpack.ts` 试跑包 · `zip.ts`/`bundle.ts` 打包 · `chatlog` 见 st · `handoff.ts` 投递箱 · `nav.ts` 页签总线 · `prefs.ts` 偏好 · `progress.ts` 进度 · `fsauto.ts` 本地写盘
+- **flow/**：`rp.ts` RP 引擎 · `theater.ts` 剧组装配 · `script.ts` 副本/推进 · `agent.ts` 工具白名单/执行器 · `agentrun.ts` run 注册表 · `snapshot.ts` 台账快照 · `interview.ts` Bible 合并 · `outline.ts` 树逻辑/复盘 · `outlinebook.ts` 剧情世界书 · `trialpack.ts` 试跑包 · `zip.ts`/`bundle.ts` 打包 · `chatlog` 见 st · `handoff.ts` 投递箱 · `nav.ts` 页签总线 · `prefs.ts` 偏好 · `progress.ts` 进度 · `fsauto.ts` 本地写盘
 - **pages/**：Projects / Interview / Outline / Cast / Lore / Trial / Personas / Theater / Playground(调试台)
 - **components/**：`RpRunner` 聊天机 · `RoomLedgerPanel` 台账裁决 · `JobMonitor` · `SettingsPanel`
 

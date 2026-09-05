@@ -51,7 +51,7 @@ export function fsSupported(): boolean {
   }
 }
 
-/** 房间文件名：清洗 + 恒定短后缀（防两个房间清洗后撞名互相覆盖；规则稳定不变） */
+/** 剧组文件名：清洗 + 恒定短后缀（防两个剧组清洗后撞名互相覆盖；规则稳定不变） */
 export function roomFileName(name: string, roomId: string): string {
   const safe =
     (name || "")
