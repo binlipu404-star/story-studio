@@ -1,6 +1,6 @@
 # Story Studio — 设计说明与自我剖析（审阅版）
 
-> 版本锚点：git HEAD `9e08f36`（v3.1-⑤ 补强后）。src 共 47 个 ts/tsx 文件、全库约 1.3 万行；逻辑测试基线 **718 断言 / 21 个测试文件**，只增不减。
+> 版本锚点：git HEAD `94832dc`（UI/交互优化轮后）。src 共 48 个 ts/tsx 文件、约 1.47 万行；逻辑测试基线 **716 断言 / 21 个测试文件**。纪律仍是"只增不减"——本轮 718→716 的唯一减少来自删除死函数 `rpSystemPrompt` 附带的 2 条其专属断言，属删死代码的合理收缩，非覆盖退化。
 > 本文档面向接手审阅的 AI/工程师。所有陈述均以仓库代码为准，标注了文件与行级线索；第 12 节是自认缺陷清单，请优先审阅该节。
 > 配套文件：`docs/ROADMAP.md`（里程碑史）、`README.md`（入口）、仓库根 `验收清单.md`（人工验收步骤，含 v3.1 手测清单）。
 
@@ -13,7 +13,7 @@
 四条不可动摇的设计公理（贯穿全部代码，审阅者可拿它们检验任何实现是否"出轨"）：
 
 1. **三条事实轴分离**：大纲树 = "意图"的唯一事实源；台账 = "已发生事实"的唯一事实源；RP 对话记录 = 底稿（原始素材）。三者各有独立生命周期，禁止互相静默改写。
-2. **提案制**：一切 AI 产出先进 `proposed`，用户确认（`decide`）后才 `confirmed` 生效。`flow/snapshot.ts` 头注释明确：**只有 confirmed 台账进快照/欠账判定——未裁决的不是事实**。（已知张力见 §12.15：场记降级路径的例外。）
+2. **提案制**：一切 AI 产出先进 `proposed`，用户确认（`decide`）后才 `confirmed` 生效。`flow/snapshot.ts` 头注释明确：**只有 confirmed 台账进快照/欠账判定——未裁决的不是事实**。（已知张力见 §12.8：场记降级路径的例外。）
 3. **副本隔离**（v3 剧场独立化的核心决策）：RP 房间只认剧本**副本** `ScriptSnapshot`。主纲改动永不自动渗透进房间（full 模式仅提示"可同步"，用户点按才刷新；chapters 模式连提示都无）；节拍完成标记只写 `room.progress`，**永不回写** `OutlineNode`。理由：聊天进行到一半时主纲被改会造成叙事精神分裂，这是产品级 bug 而非特性。
 4. **允许残缺**：任何大纲节点可独立存在、独立试跑；没有"必须先完成访谈才能往下"的门禁。
 
@@ -83,13 +83,13 @@ core/         types.ts 共享契约 + jobBus.ts 任务总线
 
 版本演进：v1 六表 → v2 personas → v3 sessions.kind + ledger.roomId（剧场独立化）→ v4 meta。**所有新增字段一律可选，无迁移代码**——旧数据缺字段即"未启用"语义，这是有意的向下兼容策略。
 
-### 3.2 核心实体速览（`core/types.ts`，331 行，逐字段有注释）
+### 3.2 核心实体速览（`core/types.ts`，325 行，逐字段有注释）
 
-- **Project**：title/synopsis/bible/lorebook + schema 号（预留，未真正使用，见 §12.2）。
+- **Project**：title/synopsis/bible/lorebook。（曾有 `schema` 版本占位字段，因无任何读写方已于 94832dc 删除，见 §12.2。）
 - **StoryBible**：`BibleField[]`（key 稳定键 + group 分组 + status: empty|rough|confirmed|**stale** + deps 依赖键）+ `BibleRevision[]`（修订前全量快照）。stale 传播逻辑在 `flow/interview.ts:mergeBibleUpdates`——上游字段变更时把 deps 引用它的字段标 stale，这是访谈页"哪里过期了"红点的来源。
 - **OutlineNode**：四级 level（volume/chapter/scene/beat）、order 排序、intent 叙事目的、beats、cast、foreshadows（setup/payoffIn/status）、status 五态（idea→draft→refined→tested→locked，`flow/outline.ts:canTransition` 定义合法迁移）、revision 计数。
-- **Character**：profile 五件套 + greeting/mesExample + `state`（台账维护的动态状态摘要，UI 有入口但闭环浅）+ `rawCard` 原样保留（**roundtrip 无损原则**：导入的 ST 卡导出时应一致）。
-- **LoreEntry**：完整 ST 语义映射（keys/secondaryKeys/constant/selective/caseSensitive/matchWholeWord/position/order/depth/sticky/group/scoring 等，见 types L114-141）。
+- **Character**：profile 五件套 + greeting/mesExample + `rawCard` 原样保留（**roundtrip 无损原则**：导入的 ST 卡导出时应一致）。曾有 `state`（台账动态状态摘要）与 `nick`（{{char}} 昵称）两字段，因无生产者/消费者已于 94832dc 删除，见 §12.2。
+- **LoreEntry**：完整 ST 语义映射（keys/secondaryKeys/constant/selective/caseSensitive/matchWholeWord/position/order/depth/sticky/group/scoring 等，见 types L111-138）。
 - **RPSession = "房间"**（§7.2 细说）：基础字段（cast/userName/messages/rollingSummary/status）+ v3 房间字段（kind/name/pace/scopeMode/sandbox/script/progress/config 快照）+ v3.1 增 `messagesArchive`（折叠留底）与 `RPMessage.reasoning/notes`。
 - **LedgerRecord**：五类 type（event/item/relation/foreshadow/worldstate）+ actors（**名字字符串，无外键**）+ provenance{sessionId,msgId} 溯源 + roomId 绑定。
 - **Persona**：全局画像，isDefault 全局至多一条（`repos.setDefaultPersona` 保证）。
@@ -115,8 +115,8 @@ core/         types.ts 共享契约 + jobBus.ts 任务总线
 - **`chatJSON<T>()`**：chat + `ai/json.ts:extractJson` 容错抽取（剥代码围栏/截最外层 {}[]/截尾逗号修复——测试 `prompts.test.mjs` 有覆盖）。
 - **`chatTools()`**：function-calling 多轮循环；端点不返回 `choices[0].message.tool_calls` 或首请求即 4xx 时抛 **`ToolsUnsupportedError`**（专类异常）——这是场记降级的触发信号，不是通用错误。
 - **`estimateTokens()`**：启发式——CJK 每字 1 token，其余每 4 字符 1 token，偏保守。**不是**任何真实分词器（§12.4）。
-- **`prompts.ts`**（438 行）：全部模板集中地——访谈（interviewSystemPrompt 输出 BibleUpdate JSON）、总纲（MASTER_OUTLINE_SPEC JSON 协议 + masterToNodes 解析）、共创教练、幕拍生成、滚动摘要双版本（rollingSummaryPrompt 纯摘要 / rollingDigestPrompt 摘要+台账抽取）、试跑包（trialGreeting/trialAuthorNote/personaPromptBlock）、复盘（sessionRecapPrompt 输出节拍命中 JSON）。中文模板，指令措辞即产品语气。
-- 已知冗余：`prompts.ts` 里另有一个 `rpSystemPrompt(RpSystemOpts)` **无任何调用者**（死代码，与被使用的 `flow/rp.ts:rpSystemPrompt` 同名不同物，见 §12.1/§12.3）。
+- **`prompts.ts`**（420 行）：全部模板集中地——访谈（interviewSystemPrompt 输出 BibleUpdate JSON）、总纲（MASTER_OUTLINE_SPEC JSON 协议 + masterToNodes 解析）、共创教练、幕拍生成、滚动摘要双版本（rollingSummaryPrompt 纯摘要 / rollingDigestPrompt 摘要+台账抽取）、试跑包（trialGreeting/trialAuthorNote/personaPromptBlock）、复盘（sessionRecapPrompt 输出节拍命中 JSON）。中文模板，指令措辞即产品语气。
+- ~~已知冗余：`prompts.ts` 里另有一个 `rpSystemPrompt(RpSystemOpts)` **无任何调用者**（死代码，与被使用的 `flow/rp.ts:rpSystemPrompt` 同名不同物，见 §12.1/§12.3）。~~ 已删（94832dc）。
 
 ---
 
@@ -185,7 +185,7 @@ core/         types.ts 共享契约 + jobBus.ts 任务总线
 - **7 工具白名单**（`flow/agent.ts:SCRIPT_TOOLS`）：read_outline（只读**副本**）/ get_progress / mark_beat（只写 room.progress）/ where_is_story / next_step / read_ledger / append_ledger（写房间正典）。**没有任何修改主纲的工具存在**——"场记不改主纲"不是靠提示词恳求，是靠工具面板上根本没有那把枪（SCRIPT_KIT_DIRECTIVE 同时向模型声明此边界）。
 - `runScriptTool(ctx, name, argsJson)` 纯函数执行器：参数校验、错误文本回给模型自我修正，Node 可测（agent.test.mjs 30 断言）。
 - **`flow/agentrun.ts`：模块级 run 注册表**（v3.1-① 的解法）。切顶层页签会卸载 TheaterPage——老实现里整理任务死在组件闭包里。现在 run 挂在模块级 `Map<roomId, AgentRunState>` 上：每个工具调用**即时**落库（经注入的 `OrganizeIO` 通道，不依赖组件存活）；页面重挂载 `subscribeAgentRun` 即重连活动流（当前步全量回放）；同房间幂等防双跑；steps 环形缓冲 60 条。依赖全部注入（io + chatTools），本模块不碰 React 不碰 Dexie——这是全库依赖注入最干净的一处。
-- 轮次：手动 maxRounds=4 / 自动=3；喂最近 24 条非空消息。`ToolsUnsupportedError` → **降级**：rollingDigestPrompt 纯摘要，抽取的台账**直接 confirmed 进正典**（用户明示决策，但违背公理 2——见 §12.15）。
+- 轮次：手动 maxRounds=4 / 自动=3；喂最近 24 条非空消息。`ToolsUnsupportedError` → **降级**：rollingDigestPrompt 纯摘要，抽取的台账**直接 confirmed 进正典**（用户明示决策，但违背公理 2——见 §12.8）。
 
 ### 7.3 楼层定时
 
@@ -199,23 +199,23 @@ File System Access API 目录句柄存 Dexie meta（刷新后重连需用户手�
 
 失血史（审计提交 9e454eb 修了 9 处）：流式/并发/切页任一时序都可能让"旧整行覆盖新行"。现行不变量集（全部在 TheaterPage/RpRunner/repos 三层协同）：
 
-1. **单链串行**：所有房间写必须走 `queueRoomWrite(roomId, fn)`（TheaterPage L313，Map<roomId, Promise 链>）——同一房间的写永不交叠。
-2. **读改写事务**：链内一律 `repos.updateSession(id, cur => …)`（repos L438，Dexie 事务内基于**最新行**合并），禁止拿着页面渲染态整行 save。
-3. **截断守卫**：`suspiciousShrink(base, msgs, allowClear, allowFold)`（L373）：新消息数明显少于库内（超过 max(2, 50%)）且未获显式放行 → **拒写**并提示。`onPersist(turns, summary, allowClear, allowFold)` 四参透传——restart（用户确认清空）给 allowClear，折叠给 allowFold，其余路径恒 false。
-4. **折叠留底**：allowFold 时被折回合并入 `messagesArchive`（L392-400，按 id 去重追加，永不回注）。
+1. **单链串行**：所有房间写必须走 `queueRoomWrite(roomId, fn)`（TheaterPage L301，Map<roomId, Promise 链>）——同一房间的写永不交叠。
+2. **读改写事务**：链内一律 `repos.updateSession(id, cur => …)`（repos L436，Dexie 事务内基于**最新行**合并），禁止拿着页面渲染态整行 save。
+3. **截断守卫**：`suspiciousShrink(base, msgs, allowClear, allowFold)`（TheaterPage L364）：新消息数明显少于库内（超过 max(2, 50%)）且未获显式放行 → **拒写**并提示。`onPersist(turns, summary, allowClear, allowFold)` 四参透传——restart（用户确认清空）给 allowClear，折叠给 allowFold，其余路径恒 false。
+4. **折叠留底**：allowFold 时被折回合并入 `messagesArchive`（TheaterPage L383-391，按 id 去重追加，永不回注）。
 5. **稳定 id 端到端**：`RpTurn.id`（newTurnId，crypto.randomUUID 兜底时间戳）→ 持久化为 RPMessage.id → turnsToMessages **按 id 对齐**（无 id 旧数据按索引回退）——编辑/删除/并发写不错位。
-6. **双标签页锁**：`navigator.locks.request('ss-rp-room-'+id, {ifAvailable:true})`（L158-164）拿不到 → 整页**只读** + 🔒 横幅 + RpRunner disabled。**不支持 locks 的浏览器不拦（老行为）**——已知边界。
+6. **双标签页锁**：`navigator.locks.request('ss-rp-room-'+id, {ifAvailable:true})`（TheaterPage L152-159）拿不到 → 整页**只读** + 🔒 横幅 + RpRunner disabled。**不支持 locks 的浏览器不拦（老行为）**——已知边界。
 7. **流式半句保护**：autosave 600ms 去抖 + pagehide/visibilitychange 立即 flush；regen 失败路径 `preserve` 参数还原现场，末条为 char 时转 swipe 候选（边角修复 0ecf190）。
 8. **greeting 重水合守卫**（M4）：greeting prop 变化但本地已有用户楼层（id 集比对）→ 跳过重水合，不吞对话。
 9. **删除保护**：删房间先自动导出 jsonl 再 confirm；删末条消息 confirm。
 
-**审阅要点**：这 9 条只有 1/2/3/4/5 有纯逻辑测试间接覆盖（经由可测函数），6-9 活在 React 生命周期里**无自动化测试**（§12.17）。
+**审阅要点**：这 9 条只有 1/2/3/4/5 有纯逻辑测试间接覆盖（经由可测函数），6-9 活在 React 生命周期里**无自动化测试**（§12.15）。
 
 ### 7.6 用户名 = 画像名（⑤）
 
-数据流：`assembleRoom` 每轮现算 `uname = persona?.name?.trim() || room.userName || "读者"`（theater.ts L115），喂 setup.userName、宏、greeting 模板、userNameHint。UI 侧配置条有画像下拉（切换即写 personaId **并同步 userName**，v3.1-⑤ 补）。`AppConfig.userName` 已从类型删除（types L324 注释）。残留语义债：`room.userName` 回落链在"画像被删/personaId 为空"时仍可能供出陈旧名——`|| room.userName` 是旧房间兼容与 staleness 风险的同一体（§12.9）。
+数据流：`assembleRoom` 每轮现算 `uname = persona?.name?.trim() || room.userName || "读者"`（theater.ts L114），喂 setup.userName、宏、greeting 模板、userNameHint。UI 侧配置条有画像下拉（切换即写 personaId **并同步 userName**，v3.1-⑤ 补）。`AppConfig.userName` 已从类型删除（types L318 注释）。残留语义债：`room.userName` 回落链在"画像被删/personaId 为空"时仍可能供出陈旧名——`|| room.userName` 是旧房间兼容与 staleness 风险的同一体（§12.6）。
 
-### 7.7 剧场 UI 交互清单（TheaterPage 1052 行 + RpRunner 679 行 + RoomLedgerPanel 246 行）
+### 7.7 剧场 UI 交互清单（TheaterPage 1105 行 + RpRunner 696 行 + RoomLedgerPanel 260 行）
 
 左栏：新建（三态模式表单）/切换/重命名/删除（自动导出）/⬇jsonl 导出/进度记忆。配置条：节奏 / 借作品级台账 / 场记 agent 开关 / **画像** / 楼层定时 / 正典计数。右栏 RoomLedgerPanel：房间正典列表 + 作品级提案裁决区 + "引入作品正典"桥。聊天区（RpRunner）：token 预算条（可编辑，onBudgetChange 500ms 去抖落房间+prefs）/ system 预览 / 🧠 思维链折叠（reasoning + 场记 notes）/ swipe ↔ / 任意楼层编辑 / 删末条 / 重新生成 / 折叠摘要 / 重新开始 / 带回复盘 / 纠偏注入（限 3 条自动退旧）。
 
@@ -227,9 +227,9 @@ File System Access API 目录句柄存 Dexie meta（刷新后重连需用户手�
 
 AI 开放式访谈边谈边长草稿：`interviewSystemPrompt` 要求模型输出 `BibleUpdate[]` JSON（`extractJson` 容错）；`mergeBibleUpdates` 纯函数落库前做状态机合并 + **deps→stale 传播**；`firstFocus`/`bibleProgress` 驱动"下一问什么/完成度条"。三线出口：应用建树（masterToNodes）/ AI 填充细纲（空幕批量 3~8 拍）/ 草稿直通世界书。
 
-### 8.2 大纲（OutlinePage 1469 行——全库最大页面）
+### 8.2 大纲（OutlinePage 1497 行——全库最大页面）
 
-四级树；`validatePlacement`（level 层级校验：父必须更粗一级）/`canTransition`（状态机）/`preorder`/`lineageOf`/`sceneSequence` 全在 outline.ts。AI 共创三结构（three-act/kishotenketsu/hero）、`masterToNodes` 把 JSON 草稿映射为节点（复用已有 id，返回 masterMapping 供再应用）、`treeToMarkdown` 导出。复盘回填：`applyRecapToNode`（节拍命中→done/改文/新增）与 `reweaveBeats`（按实录重织拍）。
+四级树；`validatePlacement`（level 层级校验：父必须更粗一级）/`canTransition`（状态机）/`preorder`/`lineageOf`/`sceneSequence` 全在 outline.ts。AI 共创三结构（three-act/kishotenketsu/hero）、`masterToNodes` 把 JSON 草稿映射为节点（**每次均铸新 id**，`opts.uid` 注入；返回 `{nodes, warnings, logline}` 供 `bulkAdd` 一次落库，不支持增量再应用）、`treeToMarkdown` 导出。复盘回填：`applyRecapToNode`（节拍命中→done/改文/新增）与 `reweaveBeats`（按实录重织拍）。
 
 ### 8.3 台账闭环（flow/snapshot.ts）
 
@@ -259,7 +259,7 @@ AI 开放式访谈边谈边长草稿：`interviewSystemPrompt` 要求模型输�
 
 ## 9. 工程惯例（审阅时请按这些约定判卷）
 
-1. **严格门**：`typecheck`（strict + noUnusedLocals + isolatedModules）→ `test:logic`（build:logic + run-tests，**基线 718 只增不减**）→ `build` → git 提交。每步全绿才许提交，commit message 里带测试数（编年史可查 368→413→…→718）。
+1. **严格门**：`typecheck`（strict + noUnusedLocals + isolatedModules）→ `test:logic`（build:logic + run-tests，**基线 716 只增不减**）→ `build` → git 提交。每步全绿才许提交，commit message 里带测试数（编年史可查 368→413→…→718→716；718→716 是唯一一次经论证的死代码收缩，见版本锚点）。
 2. **测试微框架**：`scripts/tests/*.test.mjs` 默认导出 `async (t)`，t={ok,eq,skip}；从 `dist-test/` import 编译产物——测的是真实运行代码而非源码副本。无第三方测试库。
 3. **防御式解析**是家法：`parsePrefs/parseHandoff/loadAppConfig/sanitizeDigest/extractJson/parseCardJsonText` 全部"永不抛错，坏数据逐字段回落默认/返回 null"。评审时看到空 catch + 注释是风格而非疏忽（均有注释说明为何可忽略）。
 4. **注释风格**：每文件头部块注释讲"为什么+踩过的坑"（useDefineForClassFields 覆表、IndexedDB 复合键 null、vite EBUSY——vite.config `watch.ignored` 即第三坑的疤痕）。
@@ -288,9 +288,9 @@ AI 开放式访谈边谈边长草稿：`interviewSystemPrompt` 要求模型输�
 
 ## 12. 已知缺陷与技术债（严肃自评，请优先审阅）
 
-**死代码/死字段**
-1. `ai/prompts.ts:430 rpSystemPrompt(RpSystemOpts)` 零调用者；且与 `flow/rp.ts:169 rpSystemPrompt` **同名不同物**——极易误读，建议删除或改名。
-2. `RPMessage.ooc/branchOf/editedFrom` 三字段无任何生产者/消费者（OOC 与分支树未实现）；`Project.schema` 版本字段无人读写；`Character.state` 闭环浅（台账不自动回写它）。
+**死代码/死字段**（1–2 已于 94832dc 清偿，留档备查）
+1. ~~`ai/prompts.ts:430 rpSystemPrompt(RpSystemOpts)` 零调用者；且与 `flow/rp.ts:169 rpSystemPrompt` **同名不同物**——极易误读，建议删除或改名。~~ **已删**（连带其 2 条专属测试断言，718→716）。
+2. ~~`RPMessage.ooc/branchOf/editedFrom` 三字段无任何生产者/消费者（OOC 与分支树未实现）；`Project.schema` 版本字段无人读写；`Character.state` 闭环浅（台账不自动回写它）。~~ **已删**（含 `Character.nick`、prefs 的 `lastCharId/lastPersonaId/scopeMode` 只写不读、handoff 的 `auto` 死分支）。OOC/分支树若将来实装，按语义重新引入字段即可。
 3. 根目录 `scripts/probe-*.mjs`（probe-db-v2 等）是一次性实证脚本，不在测试基线内，价值已兑现但仍在库。
 
 **语义债**
@@ -298,18 +298,19 @@ AI 开放式访谈边谈边长草稿：`interviewSystemPrompt` 要求模型输�
 5. `ss.progress.*` 只存 id/小草稿且 localStorage——隐私模式即失；清浏览器数据即失。设计意图=便利件而非记录。
 6. 历史正文中的旧用户名不可被现配置纠正（§6.5）；`room.userName` 回落链在画像被删时供出陈旧名。
 7. `suspiciousShrink` 阈值（max(2, 50%)）是启发式——合法的大删除若未经确认路径会被拦（用户会看到拒写提示而非静默丢数据：fail-safe 方向正确，但体验有毛边）。
-8. **降级场记把 AI 判断直接写成 confirmed 正典**（agentrun L180-205）——与公理 2"提案制"正面冲突。当时用户明示接受（无工具端点的兜底），审阅者应把它当作有意识的债务而非疏漏，并评估"降级也进 proposed + UI 批量裁决"的改法。
+8. **降级场记把 AI 判断直接写成 confirmed 正典**（agentrun L186-205）——与公理 2"提案制"正面冲突。当时用户明示接受（无工具端点的兜底），审阅者应把它当作有意识的债务而非疏漏，并评估"降级也进 proposed + UI 批量裁决"的改法。
 9. 台账 actors 无外键：角色改名后新旧事实的 actors 字符串不聚合，欠账/时间线的"相关者"过滤会漏。
 
 **平台边界（均为环境硬约束下的降级，非代码缺陷但要写进说明书）**
 10. `navigator.locks` 不可用（Firefox/Safari/旧 Edge）→ 双标签页同房间**无保护**，回到 last-write-wins。
 11. FSA 仅 Chromium；重授权需用户手势；多标签页共享目录句柄"最后关闭者赢"。
 12. CORS 限制：不允许跨源的推理端点不可用（无代理层，无桌面壳）。
+13. API key 明文持久在 localStorage（`story-studio.config`）——纯浏览器形态无秘密保管层，共用机器即共见；桌面壳/后端代理是根治路径（见 §2.3 边界）。
 
 **结构性债**
-13. 页面巨型化：OutlinePage 1469 / TheaterPage 1052 / TrialPage 929 行；无 ErrorBoundary（任何渲染期异常白屏整页）；无路由（深链不可能）；无组件抽象纪律（内联样式复制粘贴）。
-14. **React 层零自动化测试**：718 断言全部覆盖非 UI 逻辑；§7.5 的九条写安全不变量里 6-9 条只靠人工验收（`验收清单.md`）。Dexie 层同样无常规测试（仅一次性 fake-indexeddb probe）。
-15. 双"生命周期脱离组件"实现（jobBus 与 agentrun）结构相似未收敛；prefs/progress/handoff 三个 localStorage 壳也各自发明了一次 storage() 探测——可提炼但未提炼（有意识：三处校验语义不同，合并收益低于风险）。
+14. 页面巨型化：OutlinePage 1497 / TheaterPage 1105 / TrialPage 944 行；无 ErrorBoundary（任何渲染期异常白屏整页）；无路由（深链不可能）；无组件抽象纪律（内联样式复制粘贴——94832dc 已把跨页**非 UI** 纯工具收敛到 `core/uiUtils.ts`，内联样式与 Badge 仍按纪律留在页内）。
+15. **React 层零自动化测试**：716 断言全部覆盖非 UI 逻辑；§7.5 的九条写安全不变量里 6-9 条只靠人工验收（`验收清单.md`）。Dexie 层同样无常规测试（仅一次性 fake-indexeddb probe）。
+16. 双"生命周期脱离组件"实现（jobBus 与 agentrun）结构相似未收敛；prefs/progress/handoff 三个 localStorage 壳也各自发明了一次 storage() 探测——可提炼但未提炼（有意识：三处校验语义不同，合并收益低于风险）。
 
 ---
 
@@ -317,10 +318,10 @@ AI 开放式访谈边谈边长草稿：`interviewSystemPrompt` 要求模型输�
 
 ```bash
 npm run typecheck      # 期望 exit 0
-npm run test:logic     # 期望 total=718 failed=0（若你新增测试，只许 >718）
+npm run test:logic     # 期望 total=716 failed=0（若你新增测试，只许 >716）
 npm run build          # tsc --noEmit && vite build
 npm run test:fixtures  # 用 docs/fixtures 下真实 ST 样本跑解析器
-git log --oneline      # 19 个提交 = 完整编年史（45ef4ab → 9e08f36）
+git log --oneline      # 21 个提交 = 完整编年史（45ef4ab → 94832dc）
 ```
 
 人工路径：README「快速开始」→ 设置页填一个 OpenAI 兼容端点 → 作品页新建→访谈→大纲→试跑导包；剧场页新建房间→聊天→观察场记活动流与 token 预算条。
@@ -329,9 +330,9 @@ git log --oneline      # 19 个提交 = 完整编年史（45ef4ab → 9e08f36）
 
 ---
 
-## 附录 A：文件职责一览（src，47 文件）
+## 附录 A：文件职责一览（src，48 文件）
 
-- **core/**：`types.ts` 域契约 · `jobBus.ts` 长任务总线
+- **core/**：`types.ts` 域契约 · `jobBus.ts` 长任务总线 · `uiUtils.ts` 跨页非 UI 小工具（errMsg/isAbort/下载/剪贴板/时间）
 - **store/**：`db.ts` Dexie v4 · `repos.ts` 41 函数门面 · `templates.ts` Bible 字段种子
 - **ai/**：`client.ts` SSE/chat/chatJSON/chatTools/ToolsUnsupportedError · `config.ts` 双端点配置 · `prompts.ts` 中文模板全集 · `json.ts` 容错抽取 · `tokenizer.ts` 估算
 - **st/**：`card.ts` 卡解析/导出/PNG · `lorebook.ts` 世界书规范化 · `matcher.ts` 触发引擎 · `chatlog.ts` ST jsonl · `persona.ts` 画像导入
