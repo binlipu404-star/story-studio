@@ -55,6 +55,7 @@ export default async function (t) {
     t.eq(a.setup.pace, "loose", "2. 节奏透传");
     t.ok(a.setup.scriptBlock.includes("【剧本副本·灯塔】"), "2. 副本块注入");
     t.ok(a.setup.scriptBlock.includes("匕首失踪"), "2. 副本节拍可见");
+    t.ok(a.setup.bibleBlock.includes("【构思档案·作品定位】") && a.setup.bibleBlock.includes("永夜之海"), "2. 构思档案要素固定注入");
     t.ok(a.setup.ledgerBlock.includes("A 烧了信"), "2. 剧组正典注入");
     t.ok(!a.setup.ledgerBlock.includes("作品级旧事"), "2. 作品级台账默认隔离");
     t.ok(a.setup.ledgerBlock.includes("匕首的去向成谜"), "2. 副本伏笔欠账注入");
@@ -89,6 +90,7 @@ export default async function (t) {
     t.eq(sb.setup.charName, "旁白", "5. 沙盒=旁白");
     t.eq(sb.setup.scriptBlock, undefined, "5. 沙盒无副本块");
     t.eq(sb.setup.description, "永夜之海", "5. 世界观兜底注入");
+    t.ok(sb.setup.bibleBlock.includes("永夜之海"), "5. 沙盒组同样注入构思档案要素");
   }
 
   // 6. newRoom 形状与排序

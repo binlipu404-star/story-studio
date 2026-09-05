@@ -5,7 +5,7 @@
 //       解析由调用方（服务层）用 ai/json.ts extractJson 完成。
 // ============================================================
 
-import type { BibleField, OutlineNode, Beat, LedgerRecord, ChatMessage, Persona } from "../core/types";
+import type { BibleField, OutlineNode, Beat, LedgerRecord, ChatMessage, Character, Persona } from "../core/types";
 import type { MasterOutlineJson } from "../flow/outline.js"; // 仅类型（type-only，编译后零依赖）
 
 // ---------- 通用小助手 ----------
@@ -34,6 +34,42 @@ export function fieldsMarkdown(fields: BibleField[], valueLimit = 400): string {
 
 export function beatsToLines(beats: Beat[]): string {
   return beats.map((b, i) => `${i + 1}. ${b.text}${b.done ? "（已上演）" : ""}`).join("\n");
+}
+
+/**
+ * 构思档案 → 剧场「作品定位」块（v3.2 固定注入）。
+ * 与访谈版 fieldsMarkdown 的区别：这是给 RP 模型的，不要状态机噪音（空缺/待复查），
+ * 只留有内容的要素；缓存友好的确定性输出——字段按档案序、逐字段截断、总量封顶、
+ * 溢出按同序裁尾（确定性 = 同样输入永远同样字节，前缀缓存不抖）。
+ * 尾注压掉最大的风险：档案=「计划中的书」，正典=「实际发生的事」，冲突时以正典为准。
+ */
+export function bibleElementsBlock(
+  fields: BibleField[],
+  opts: { valueLimit?: number; totalLimit?: number } = {},
+): string | undefined {
+  const valueLimit = opts.valueLimit ?? 160;
+  const totalLimit = opts.totalLimit ?? 1400;
+  const filled = fields.filter((f) => f.value.trim());
+  if (!filled.length) return undefined;
+  const lines: string[] = [];
+  let used = 0;
+  let omitted = 0;
+  for (const f of filled) {
+    const v = f.value.trim().replace(/\s+/g, " ");
+    const piece = `- ${f.label}：${v.length > valueLimit ? v.slice(0, valueLimit) + "…" : v}`;
+    if (used + piece.length > totalLimit) {
+      omitted++;
+      continue;
+    }
+    used += piece.length;
+    lines.push(piece);
+  }
+  if (omitted > 0) lines.push(`- …另有 ${omitted} 项要素从简（全文见构思档案）`);
+  return [
+    "【构思档案·作品定位】（作者定稿的写作定位：题材/文风/视角/世界/主角/冲突以此为准）",
+    ...lines,
+    "- 这是「计划中的书」；场景里已发生的事实（台账快照/剧本进度）是「实际发生」。两者冲突时以实际发生为准，不要为纠正剧情而硬拗，可顺势往档案意图靠拢。",
+  ].join("\n");
 }
 
 /** 大纲节点 → 缩进摘要（注入后续提示词用） */
@@ -333,6 +369,86 @@ export function personaPromptBlock(p: Pick<Persona, "name" | "description" | "ap
   ]
     .filter(Boolean)
     .join("\n");
+}
+
+/** 人物卡 → 简介块（访谈选材用；与 RP 的角色卡注入不同，这里只求"看懂这个人"） */
+export function characterBriefBlock(c: Pick<Character, "profile" | "scenario">): string {
+  const p = c.profile;
+  const sc = c.scenario?.trim() ?? "";
+  return [
+    p.appearance.trim() ? `外貌：${p.appearance.trim()}` : "",
+    p.personality.trim() ? `性格：${p.personality.trim()}` : "",
+    p.background.trim() ? `背景：${p.background.trim()}` : "",
+    p.speechStyle.trim() ? `口吻：${p.speechStyle.trim()}` : "",
+    sc ? `场景：${sc}` : "",
+  ]
+    .filter(Boolean)
+    .join("\n");
+}
+
+// ---------- M2 构思访谈：辅助选材 ----------
+
+/** 访谈选材：一张勾选的人物卡（id 供 UI 回显，name 供块内标注来源） */
+export interface InterviewCharPick {
+  id: string;
+  name: string;
+  block: string; // charPromptBlock 产物（调用方拼好，本函数只管排版）
+}
+/** 访谈选材：一条勾选的世界书词条 */
+export interface InterviewLorePick {
+  id: string;
+  comment: string;
+  content: string;
+}
+/** 访谈选材：勾选的若干用户人设（可多个——作者可能想比对几种"读者化身"） */
+export interface InterviewPersonaPick {
+  id: string;
+  name: string;
+  block: string; // personaPromptBlock 产物
+}
+
+/**
+ * 访谈选材 → 独立 system 段（v3.2）。
+ *
+ * 缓存契约（与调用方共同遵守，改动前请先读）：本函数是**纯函数**——输出只由
+ * 入参的「相对顺序 + 内容」决定，绝不掺入 Date.now/random/Map 迭代序之外的东西。
+ * 页面侧因此可以把返回值钉死成一条独立 system 消息：同一会话内 id 集合与内容
+ * 不变 ⇒ 字节不变 ⇒ 供应商前缀缓存整块命中；改动只作废它之后的消息。
+ * 顺序契约：按调用方传入的 id 顺序（页面用 id 升序，与勾选先后无关）。
+ */
+export function interviewMaterialsBlock(picks: {
+  characters: InterviewCharPick[];
+  lore: InterviewLorePick[];
+  personas: InterviewPersonaPick[];
+}): string | undefined {
+  const { characters, lore, personas } = picks;
+  if (!characters.length && !lore.length && !personas.length) return undefined;
+  const lines: string[] = [
+    "【辅助选材·作者指定】以下是作者勾选的既有素材，用来帮你理解这部作品已有的人与设定。",
+    "- 它们只是**参考**：与当前构思冲突时，先向作者点明分歧并给建议，不要擅改素材或档案来互相迁就。",
+  ];
+  if (characters.length) {
+    lines.push("", "### 已有人物卡");
+    for (const c of characters) {
+      lines.push(`《${c.name || "（未命名）"}》`);
+      if (c.block.trim()) lines.push(c.block.trim());
+    }
+  }
+  if (lore.length) {
+    lines.push("", "### 已有世界书词条");
+    for (const l of lore) {
+      const c = l.content.trim();
+      lines.push(`- 「${l.comment || "（未命名）"}」：${c.length > 300 ? c.slice(0, 300) + "…" : c}`);
+    }
+  }
+  if (personas.length) {
+    lines.push("", "### 已有用户人设（玩家/读者化身）");
+    for (const p of personas) {
+      lines.push(`《${p.name || "（未命名）"}》`);
+      if (p.block.trim()) lines.push(p.block.trim());
+    }
+  }
+  return lines.join("\n");
 }
 
 /** ST 角色卡 greeting 位：把这一幕的戏剧目标做成开场指令+开场文 */

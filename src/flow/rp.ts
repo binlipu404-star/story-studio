@@ -40,6 +40,8 @@ export interface RpSetup {
   ledgerBlock?: string;
   /** 剧场剧本副本块（flow/script.scriptBlock 产物；有则注入【剧本副本】段） */
   scriptBlock?: string;
+  /** v3.2 构思档案要素块（prompts.bibleElementsBlock 产物；有则注入【构思档案·作品定位】段） */
+  bibleBlock?: string;
   /** 剧场推演节奏（undefined=不加节奏段=ST 原行为） */
   pace?: "tight" | "loose";
   loreEntries: LoreEntry[]; // 已启用的世界书词条
@@ -106,7 +108,7 @@ export function paceDirective(pace: "tight" | "loose"): string {
 
 /** system 提示词分段（组装序）。priority=∞ 永不裁；有限值小者先裁。 */
 export interface RpSystemSection {
-  key: "roleDirective" | "pace" | "extra" | "loreBefore" | "card" | "persona" | "userNameHint" | "ledger" | "script" | "examples" | "loreAfter" | "authorNote";
+  key: "roleDirective" | "pace" | "extra" | "loreBefore" | "card" | "bible" | "persona" | "userNameHint" | "ledger" | "script" | "examples" | "loreAfter" | "authorNote";
   label: string;
   text: string;
   priority: number;
@@ -117,6 +119,8 @@ const NEVER = Number.POSITIVE_INFINITY;
 /**
  * 把静态装配拆成分段（N2 预算管线需要逐段计 token/取舍）。
  * 段序=原 system 组装序；ledgerBlock 插在画像之后。
+ * 稳定段（作者不改就不变）尽量排在 loreBefore 之前：世界书命中每轮在变，
+ * system 的字节前缀在它那里断裂，其前的段落才谈得上供应商前缀缓存命中。
  */
 export function rpSystemSections(setup: RpSetup, loreBefore = "", loreAfter = ""): RpSystemSection[] {
   const { charName, userName } = setup;
@@ -130,6 +134,10 @@ export function rpSystemSections(setup: RpSetup, loreBefore = "", loreAfter = ""
 
   if (nonEmpty(setup.systemExtra)) sections.push({ key: "extra", label: "本幕指引", text: setup.systemExtra!.trim(), priority: NEVER });
   if (nonEmpty(setup.pace)) sections.push({ key: "pace", label: "推演节奏", text: paceDirective(setup.pace!), priority: NEVER });
+  // v3.2 构思档案要素：放在 loreBefore 之前——世界书命中每轮随对话变化，system 字节前缀
+  // 本就在它那里断裂；档案摆在断裂点之前的稳定头部，作者不改档案就一直吃得到前缀缓存。
+  // 裁剪优先级 4（比对话范例更低）：预算吃紧先丢作者意图，剧组正典与剧本副本更该保。
+  if (nonEmpty(setup.bibleBlock)) sections.push({ key: "bible", label: "构思档案", text: setup.bibleBlock!.trim(), priority: 4 });
   if (nonEmpty(loreBefore)) sections.push({ key: "loreBefore", label: "世界书·背景", text: `【世界书·背景】\n${loreBefore.trim()}`, priority: 10 });
 
   const card: string[] = [`你是 ${charName}。`];

@@ -1,6 +1,6 @@
 # Story Studio — 设计说明与自我剖析（审阅版）
 
-> 版本锚点：git HEAD ≥ `f9427cd`（「重新开始」整组重来 + 术语统一轮）。src 共 48 个 ts/tsx 文件、约 1.47 万行；逻辑测试基线 **716 断言 / 21 个测试文件**。纪律仍是"只增不减"——此前 718→716 的唯一减少来自删除死函数 `rpSystemPrompt` 附带的 2 条其专属断言，属删死代码的合理收缩，非覆盖退化。
+> 版本锚点：git HEAD ≥ `f360e9b`（v3.2 轮：构思档案要素固定注入剧场 + 访谈辅助选材）。src 共 48 个 ts/tsx 文件、约 1.5 万行；逻辑测试基线 **740 断言 / 21 个测试文件**（v3.2 新增 24 条）。此前 718→716 的唯一减少来自删除死函数 `rpSystemPrompt` 附带的 2 条其专属断言，属删死代码的合理收缩，非覆盖退化。
 > **术语对照**：产品把剧场的长期 RP 单元称为**「剧组」**（旧称「房间」，UI/文档已全量更名）。代码标识符与持久化键**保留 room 词根不动**（`activeRoom`/`queueRoomWrite`/`RPSession.kind:"theater"`/`ledger.roomId`/`prefs.lastRoomId` 等——改持久键需数据迁移，收益低风险高，明确不做）。读到「剧组」↔`room*` 并存即是此决策，不是遗漏。派生动词随隐喻走：开房→**开机**、整房重来→**整组重来**。
 > 本文档面向接手审阅的 AI/工程师。所有陈述均以仓库代码为准，标注了文件与行级线索；第 12 节是自认缺陷清单，请优先审阅该节。
 > 配套文件：`docs/ROADMAP.md`（里程碑史）、`README.md`（入口）、仓库根 `验收清单.md`（人工验收步骤，含 v3.1 手测清单）。
@@ -145,6 +145,7 @@ core/         types.ts 共享契约 + jobBus.ts 任务总线
 | roleDirective | 角色扮演主指令 | NEVER | ST 风默认指令 |
 | extra | 本幕指引 | NEVER | 导演指令/纠偏也走此位（经 composeAuthorNote 合成） |
 | pace | 推演节奏 | NEVER | tight/loose 两档指令 |
+| bible | 构思档案 | **4** | v3.2 新增：作品定位要素固定注入（题材/文风/视角/世界/主角/冲突，纯函数确定性截断）。位置刻意在 loreBefore **之前**——世界书命中每轮在变，system 字节前缀在它那里断裂，档案摆断裂点之前的稳定区才吃得到供应商前缀缓存；裁序比 examples 还低（预算吃紧先丢作者意图，保剧组正典/副本） |
 | loreBefore | 世界书·背景 | 10 | |
 | card | 角色卡 | NEVER | description/personality/scenario 拼合 |
 | persona | 用户画像 | **30** | 可裁！`【{{user}}（由用户扮演）】` |
@@ -227,6 +228,10 @@ File System Access API 目录句柄存 Dexie meta（刷新后重连需用户手�
 ### 8.1 访谈（InterviewPage + flow/interview.ts）
 
 AI 开放式访谈边谈边长草稿：`interviewSystemPrompt` 要求模型输出 `BibleUpdate[]` JSON（`extractJson` 容错）；`mergeBibleUpdates` 纯函数落库前做状态机合并 + **deps→stale 传播**；`firstFocus`/`bibleProgress` 驱动"下一问什么/完成度条"。三线出口：应用建树（masterToNodes）/ AI 填充细纲（空幕批量 3~8 拍）/ 草稿直通世界书。
+
+**v3.2 辅助选材**：右栏头部「辅助选材」折叠面板，跨库勾选本作品的人物卡/世界书词条 + 全局用户人设，每轮以**独立 system 消息**（`interviewMaterialsBlock`，插在访谈 system 之后、历史之前）注入，块头明示"仅为参考，冲突先问作者"。勾选按 **id 升序**排列（与点选先后无关），纯函数渲染 ⇒ 勾选集不变 ⇒ 字节不变 ⇒ 前缀缓存可命中；勾选集合持久化在 `ss.progress.interview.*`（与草稿同批，恢复时原样收下、渲染时自然裁剪已删素材）。
+
+**v3.2 剧场固定注入**：`assembleRoom` 每轮把构思档案的**有值字段**压成 `bibleBlock`（`bibleElementsBlock`：逐字段 160 字截断、总量 1400 字封顶、溢出同序裁尾 + 尾注"计划 vs 实际冲突以实际发生为准"）。作为 `bible` 节进 system（priority 4，位置在 loreBefore 前，理由见 §6.1 表）；剧本组/旁白组/沙盒组三条装配路径全部携带。
 
 ### 8.2 大纲（OutlinePage 1497 行——全库最大页面）
 

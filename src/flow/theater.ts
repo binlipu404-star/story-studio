@@ -21,7 +21,7 @@ import type { RpSetup } from "./rp.js";
 import { buildTrialPack, synthesizeNarratorCard } from "./trialpack.js";
 import { ledgerSnapshot } from "./snapshot.js";
 import { progressMemoText, scriptBlock, snapshotDebt, snapshotDebtText, storyAdvance } from "./script.js";
-import { personaPromptBlock } from "../ai/prompts.js";
+import { bibleElementsBlock, personaPromptBlock } from "../ai/prompts.js";
 import { exportCardV2 } from "../st/card.js";
 
 const EMPTY_SNAP: ScriptSnapshot = { sourceTitle: "", takenAt: 0, nodesUpdatedAt: 0, scenes: [] };
@@ -110,6 +110,9 @@ export function assembleRoom(input: RoomAssemblyInput): RoomAssembly {
       .filter(Boolean)
       .join("\n") || undefined;
   const loreSettings = project?.lorebook ?? { scanDepth: 2, tokenBudget: 2048, recursiveScanning: true };
+  // v3.2 构思档案要素块（固定注入）：作者定稿的题材/文风/视角/世界/主角/冲突。
+  // 纯函数确定性输出——档案不动则字节不动，配合 rp.ts 的分段位置吃满前缀缓存。
+  const bibleBlock = bibleElementsBlock(project?.bible.fields ?? []);
   // v3.1-⑤ 用户名取决于画像：有画像用画像名，无画像回落剧组存量名（旧组兼容）
   const uname = persona?.name?.trim() || room.userName || "读者";
   const personaBlock = persona ? personaPromptBlock(persona) : undefined;
@@ -133,6 +136,7 @@ export function assembleRoom(input: RoomAssemblyInput): RoomAssembly {
         charName: "旁白",
         userName: uname,
         description: worldview ?? "自由即兴场景：以环境反应与配角插叙回应 {{user}}。",
+        bibleBlock,
         personaBlock,
         userNameHint,
         authorNote: "（自由即兴组：无剧本。保持世界一致，把主动权交给 {{user}}。）",
@@ -185,6 +189,7 @@ export function assembleRoom(input: RoomAssemblyInput): RoomAssembly {
       personality: lead.profile.personality || undefined,
       scenario: lead.scenario || undefined,
       exampleDialogue: lead.profile.exampleLines.join("\n") || undefined,
+      bibleBlock,
       personaBlock,
       userNameHint,
       authorNote: built.authorNote,
@@ -202,6 +207,7 @@ export function assembleRoom(input: RoomAssemblyInput): RoomAssembly {
       userName: uname,
       description: typeof nd.description === "string" ? nd.description : "",
       scenario: typeof nd.scenario === "string" ? nd.scenario || undefined : undefined,
+      bibleBlock,
       personaBlock,
       userNameHint,
       authorNote: built.authorNote,

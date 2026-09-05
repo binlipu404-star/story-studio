@@ -86,6 +86,23 @@ export default async function (t) {
     t.ok(!rpSystemPrompt(setup()).includes("玩家实名"), "2b. 缺省无实名段");
   }
 
+  // 2c. bibleBlock（v3.2 构思档案段）：位置在世界书·背景之前（稳定前缀区）、缺省不出现
+  {
+    // 位置契约要经 rpAssemble 验（世界书·背景段只在扫描命中后才存在，须带 constant 词条的 setup 走全程）
+    const fat = rpAssemble(setup({ bibleBlock: "【构思档案·作品定位】\n- 题材与类型：蒸汽朋克悬疑" }), [t0("char", "开场白"), t0("user", "你好")]);
+    const sys = fat.messages[0].content;
+    t.ok(sys.includes("蒸汽朋克悬疑"), "2c. 档案段出现");
+    t.ok(sys.indexOf("蒸汽朋克悬疑") < sys.indexOf("【世界书·背景】"), "2c. 位于世界书之前（可缓存前缀区）");
+    const keys = fat.sections.map((s) => s.key);
+    t.ok(keys.indexOf("bible") < keys.indexOf("loreBefore"), "2c. 分段序：bible 紧邻 loreBefore 之前");
+    t.ok(!rpSystemPrompt(setup()).includes("构思档案"), "2c. 缺省无档案段");
+    // 裁序：档案(4) 比对话范例(5) 更低，先被裁
+    const a = rpAssemble(setup({ bibleBlock: "【构思档案·作品定位】\n- 题材：ZZZ" }), [t0("char", "开场白"), t0("user", "你好")], { budgetTokens: 350, reserveTokens: 100 });
+    const byKey = new Map(a.sections.map((s) => [s.key, s]));
+    t.ok(!byKey.get("bible").kept, "2c. 预算吃紧档案段最先裁（先于范例）");
+    t.ok(!a.messages[0].content.includes("ZZZ"), "2c. 被裁档案不进 messages");
+  }
+
   // 3. rpAssemble 默认预算：全保留，历史逐条映射
   {
     const turns = [t0("char", "开场白"), t0("user", "你好"), t0("char", "嗯"), t0("user", "地窖在哪")];

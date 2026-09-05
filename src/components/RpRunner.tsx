@@ -37,6 +37,7 @@ const SEC_COLORS: Record<string, string> = {
   persona: "#78909c",
   pace: "#9ccc65",
   userNameHint: "#bcaaa4",
+  bible: "#a1887f",
   examples: "#b0bec5",
   history: "#546e7a",
 };

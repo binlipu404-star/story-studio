@@ -4,6 +4,9 @@ import {
   beatsToLines,
   nodeDigest,
   interviewSystemPrompt,
+  bibleElementsBlock,
+  characterBriefBlock,
+  interviewMaterialsBlock,
   masterOutlinePrompt,
   nodeDiscussPrompt,
   nextScenePrompt,
@@ -63,6 +66,51 @@ export default async function (t) {
   t.ok(iv.includes("JSON") && iv.includes("askNext"), "访谈系统提示含 JSON 协议");
   t.ok(iv.includes("「题材与类型」"), "访谈提示注入字段表");
   t.ok(interviewSystemPrompt([F({ status: "confirmed", value: "v" }), F({ status: "rough", value: "r" })]).includes("已全部有内容"), "全满时切换口吻");
+
+  // v3.2 构思档案要素块（剧场固定注入；确定性输出=缓存契约）
+  {
+    const filled = [
+      F({ key: "genre", label: "题材与类型", value: "蒸汽朋克悬疑" }),
+      F({ key: "tone", label: "基调与文风", value: "   " }),
+      F({ key: "premise", label: "主线一句话", value: "y".repeat(500) }),
+    ];
+    const b = bibleElementsBlock(filled);
+    t.ok(b.includes("【构思档案·作品定位】"), "档案块有标题");
+    t.ok(b.includes("题材与类型：蒸汽朋克悬疑"), "有值字段注入");
+    t.ok(!b.includes("基调与文风"), "空白字段不出现");
+    t.ok(b.includes("y".repeat(160)) && !b.includes("y".repeat(161)), "单字段 160 字截断");
+    t.ok(b.includes("实际发生为准"), "尾注：与正典冲突以实际发生为准");
+    t.eq(bibleElementsBlock([]), undefined, "空档案=undefined");
+    const many = Array.from({ length: 12 }, (_, i) => F({ key: "k" + i, label: "L" + i, value: "字".repeat(160) }));
+    const bm = bibleElementsBlock(many);
+    t.ok(bm.includes("从简") && !bm.includes("L11"), "总量封顶溢出裁尾并注明");
+    t.eq(bibleElementsBlock(filled), bibleElementsBlock(filled), "纯函数同输入同字节（前缀缓存契约）");
+  }
+
+  // v3.2 人物卡简介块 + 访谈选材块
+  {
+    const CH = (over = {}) => ({
+      profile: { appearance: "银发", personality: "冷峻", background: "守灯人", speechStyle: "", exampleLines: [] },
+      scenario: "灯塔",
+      ...over,
+    });
+    const brief = characterBriefBlock(CH());
+    t.ok(brief.includes("外貌：银发") && brief.includes("性格：冷峻") && brief.includes("背景：守灯人") && brief.includes("场景：灯塔"), "人物简介块四段齐全");
+    t.ok(!brief.includes("口吻"), "空口吻不占行");
+    t.eq(characterBriefBlock(CH({ profile: { appearance: "", personality: "", background: "", speechStyle: "", exampleLines: [] }, scenario: "" })), "", "空卡=空串");
+
+    t.eq(interviewMaterialsBlock({ characters: [], lore: [], personas: [] }), undefined, "无勾选=无选材块");
+    const m = interviewMaterialsBlock({
+      characters: [{ id: "c2", name: "薇薇安", block: "外貌：银发" }],
+      lore: [{ id: "l1", comment: "灯塔", content: "建于1899年。" + "长".repeat(400) }],
+      personas: [{ id: "p1", name: "黎明", block: "名字：黎明" }],
+    });
+    t.ok(m.includes("【辅助选材·作者指定】") && m.includes("### 已有人物卡") && m.includes("《薇薇安》") && m.includes("外貌：银发"), "人物卡段完整");
+    // 词条正文 = 8 字前缀（建于1899年。）+ 400 长：截到 300 字 ⇒ 恰含 292 个"长"
+    t.ok(m.includes("「灯塔」") && m.includes("长".repeat(292) + "…") && !m.includes("长".repeat(293)), "世界书词条 300 字截断");
+    t.ok(m.includes("### 已有用户人设") && m.includes("《黎明》"), "人设段完整");
+    t.ok(m.includes("参考"), "标注素材仅为参考");
+  }
 
   // 总纲提示
   const mo = masterOutlinePrompt(fields, { structure: "three-act", volumeCount: 2 });

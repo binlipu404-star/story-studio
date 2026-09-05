@@ -6,11 +6,17 @@
 //       每次落库前把「保存前快照」压入 bible.revisions（裁剪到最近 20 条）。
 // ============================================================
 import { useEffect, useRef, useState, type CSSProperties } from "react";
-import type { BibleField, BibleFieldStatus, BibleRevision, ChatMessage, Project } from "../core/types";
+import type { BibleField, BibleFieldStatus, BibleRevision, ChatMessage, Character, LoreEntry, Persona, Project } from "../core/types";
 import * as repos from "../store/repos";
 import { errMsg, isAbort } from "../core/uiUtils";
 import { bibleProgress, firstFocus, mergeBibleUpdates } from "../flow/interview.js";
-import { interviewSystemPrompt, type InterviewTurn } from "../ai/prompts";
+import {
+  characterBriefBlock,
+  interviewMaterialsBlock,
+  interviewSystemPrompt,
+  personaPromptBlock,
+  type InterviewTurn,
+} from "../ai/prompts";
 import { chat } from "../ai/client";
 import { extractJson } from "../ai/json";
 import { loadProgress, makeDebouncer, saveProgress } from "../flow/progress";
@@ -135,6 +141,18 @@ export function InterviewPage({ projectId }: { projectId: string }) {
   const [chatError, setChatError] = useState<string | null>(null);
   const [toast, setToast] = useState<string | null>(null);
 
+  // ---- v3.2 辅助选材：勾选的人物卡/世界书词条/用户人设（id 数组，升序存储） ----
+  const [allChars, setAllChars] = useState<Character[]>([]);
+  const [allLore, setAllLore] = useState<LoreEntry[]>([]);
+  const [allPersonas, setAllPersonas] = useState<Persona[]>([]);
+  const [matsError, setMatsError] = useState<string | null>(null);
+  // 勾选集合按 id 升序存（顺序=注入顺序，与点选先后无关 → 提示词字节稳定，缓存可命中）
+  const [sel, setSel] = useState<{ chars: string[]; lore: string[]; personas: string[] }>({
+    chars: [],
+    lore: [],
+    personas: [],
+  });
+
   const abortRef = useRef<AbortController | null>(null);
   const toastTimer = useRef<number | null>(null);
   const prevStorageKey = useRef(storageKey);
@@ -153,6 +171,33 @@ export function InterviewPage({ projectId }: { projectId: string }) {
         setStaleNotes({});
       } catch (e) {
         if (alive) setLoadError(errMsg(e));
+      }
+    })();
+    return () => {
+      alive = false;
+    };
+  }, [projectId]);
+
+  // v3.2 辅助选材：候选清单（人物卡/世界书随作品走，人设是全局库）。
+  // 切作品时先清空旧候选，避免串项目的勾选残留。
+  useEffect(() => {
+    let alive = true;
+    setAllChars([]);
+    setAllLore([]);
+    setMatsError(null);
+    void (async () => {
+      try {
+        const [chars, lore, personas] = await Promise.all([
+          repos.listCharacters(projectId),
+          repos.listLoreEntries(projectId),
+          repos.listPersonas(),
+        ]);
+        if (!alive) return;
+        setAllChars(chars);
+        setAllLore(lore);
+        setAllPersonas(personas);
+      } catch (e) {
+        if (alive) setMatsError(errMsg(e));
       }
     })();
     return () => {
@@ -186,13 +231,21 @@ export function InterviewPage({ projectId }: { projectId: string }) {
   useEffect(() => {
     if (!dataReady || draftRestoredFor.current === projectId) return;
     draftRestoredFor.current = projectId;
-    const saved = loadProgress<{ inputDraft?: string; drafts?: Record<string, string> }>(
-      "interview",
-      projectId,
-    );
+    const saved = loadProgress<{
+      inputDraft?: string;
+      drafts?: Record<string, string>;
+      sel?: Partial<{ chars: string[]; lore: string[]; personas: string[] }>;
+    }>("interview", projectId);
     if (!saved) return;
     if (typeof saved.inputDraft === "string" && saved.inputDraft) {
       setInput(saved.inputDraft.slice(0, DRAFT_TEXT_MAX));
+    }
+    // v3.2 选材勾选恢复：原样收下 id（候选此刻可能还没加载完），真正的裁剪发生在
+    // 派生计算里——只认候选中仍存在的 id，已删素材自然脱落，不报错。
+    const s = saved.sel;
+    if (s && typeof s === "object") {
+      const ids = (v: unknown): string[] => (Array.isArray(v) ? v.filter((x): x is string => typeof x === "string") : []);
+      setSel({ chars: ids(s.chars), lore: ids(s.lore), personas: ids(s.personas) });
     }
     // 行内草稿逐个校验字段仍存在（防已删字段），空串不入
     const fieldKeys = new Set((project.bible.fields ?? []).map((f) => f.key));
@@ -213,12 +266,16 @@ export function InterviewPage({ projectId }: { projectId: string }) {
     for (const [k, v] of Object.entries(drafts)) {
       if (v && v.trim()) slim[k] = v.slice(0, DRAFT_TEXT_MAX);
     }
-    saveProgress("interview", projectId, { inputDraft: input.slice(0, DRAFT_TEXT_MAX), drafts: slim });
+    saveProgress("interview", projectId, {
+      inputDraft: input.slice(0, DRAFT_TEXT_MAX),
+      drafts: slim,
+      sel,
+    });
   };
   const progressDeb = useRef(makeDebouncer(400, () => progressWriteRef.current()));
   useEffect(() => {
     progressDeb.current.bump();
-  }, [dataReady, projectId, input, drafts]);
+  }, [dataReady, projectId, input, drafts, sel]);
   useEffect(() => {
     const flush = () => progressDeb.current.flushNow();
     window.addEventListener("pagehide", flush);
@@ -248,6 +305,30 @@ export function InterviewPage({ projectId }: { projectId: string }) {
   const byKey = new Map(fields.map((f) => [f.key, f]));
   const labelOf = (k: string): string => byKey.get(k)?.label ?? k;
   const progress = Math.round(bibleProgress(fields) * 100);
+
+  // ---- v3.2 选材勾选 → 注入块 ----
+  // 顺序契约：一律按 id 升序（与点选先后无关）。勾选集合不变 ⇒ 块字节不变 ⇒
+  // 该 system 消息在整段对话前缀里的位置稳定，供应商前缀缓存持续命中。
+  const toggleSel = (kind: keyof typeof sel, id: string) =>
+    setSel((s) => {
+      const has = s[kind].includes(id);
+      return { ...s, [kind]: has ? s[kind].filter((x) => x !== id) : [...s[kind], id] };
+    });
+  const materialsBlock = interviewMaterialsBlock({
+    characters: allChars
+      .filter((c) => sel.chars.includes(c.id))
+      .sort((a, b) => (a.id < b.id ? -1 : 1))
+      .map((c) => ({ id: c.id, name: c.name, block: characterBriefBlock(c) })),
+    lore: allLore
+      .filter((e) => sel.lore.includes(e.id))
+      .sort((a, b) => (a.id < b.id ? -1 : 1))
+      .map((e) => ({ id: e.id, comment: e.comment, content: e.content })),
+    personas: allPersonas
+      .filter((p) => sel.personas.includes(p.id))
+      .sort((a, b) => (a.id < b.id ? -1 : 1))
+      .map((p) => ({ id: p.id, name: p.name, block: personaPromptBlock(p) })),
+  });
+  const selCount = sel.chars.length + sel.lore.length + sel.personas.length;
 
   // firstFocus = 当前问题焦点行；若「最近一轮未采纳的提案」已覆盖它，则高亮让位给提案卡
   const focus = firstFocus(fields);
@@ -313,6 +394,10 @@ export function InterviewPage({ projectId }: { projectId: string }) {
     const round = messages.filter((m) => m.role === "assistant").length + 1;
     const apiMessages: ChatMessage[] = [
       { role: "system", content: interviewSystemPrompt(fieldsNow) },
+      // v3.2 选材块：钉成独立 system 条（不进聊天记录，每轮现拼）。
+      // 勾选集不变 ⇒ 字节不变 ⇒ 该条及其前缀可被供应商缓存；字段表在上一条里，
+      // 采纳提案本来就会作废缓存——选材的增删只多作废这一条之后的部分。
+      ...(materialsBlock ? [{ role: "system" as const, content: materialsBlock }] : []),
       ...messages.map((m): ChatMessage => ({ role: m.role, content: m.content })),
       { role: "user", content: text },
     ];
@@ -546,6 +631,47 @@ export function InterviewPage({ projectId }: { projectId: string }) {
               <button onClick={resetSession}>新会话</button>
             </div>
           </div>
+
+          {/* ---------- v3.2 辅助选材：勾选已有素材辅助 AI 理解与构思 ---------- */}
+          <details style={{ marginTop: 8 }}>
+            <summary className="muted" style={{ fontSize: 13, cursor: "pointer" }}>
+              辅助选材：已选 {selCount} 项（人物卡 {sel.chars.length} · 世界书 {sel.lore.length} · 人设 {sel.personas.length}）
+              {selCount > 0 && " —— 每轮随对话注入给 AI"}
+            </summary>
+            {matsError && <div style={{ color: "#c62828", fontSize: 12, marginTop: 4 }}>素材清单载入失败：{matsError}</div>}
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 10, marginTop: 8, fontSize: 13 }}>
+              {[
+                { kind: "chars" as const, title: "人物卡", empty: "人物库为空", items: allChars.map((c) => ({ id: c.id, label: c.name || "（未命名）" })) },
+                { kind: "lore" as const, title: "世界书词条", empty: "世界书为空", items: allLore.map((e) => ({ id: e.id, label: e.comment || "（未命名）", hint: e.constant ? "常驻" : e.keys.slice(0, 3).join("/") })) },
+                { kind: "personas" as const, title: "用户人设", empty: "人设库为空", items: allPersonas.map((p) => ({ id: p.id, label: p.name || "（未命名）" })) },
+              ].map((col) => (
+                <div key={col.kind} style={{ minWidth: 0 }}>
+                  <strong style={{ fontSize: 12 }}>{col.title}</strong>
+                  {col.items.length === 0 ? (
+                    <p className="muted" style={{ fontSize: 12, margin: "4px 0" }}>{col.empty}</p>
+                  ) : (
+                    <div style={{ maxHeight: 140, overflowY: "auto", marginTop: 4 }}>
+                      {col.items.map((it) => (
+                        <label key={it.id} style={{ display: "block", cursor: "pointer", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+                          <input
+                            type="checkbox"
+                            checked={sel[col.kind].includes(it.id)}
+                            disabled={streaming}
+                            onChange={() => toggleSel(col.kind, it.id)}
+                          />{" "}
+                          {it.label}
+                          {"hint" in it && it.hint ? <span className="muted"> · {it.hint}</span> : null}
+                        </label>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              ))}
+            </div>
+            <p className="muted" style={{ fontSize: 12, marginBottom: 0 }}>
+              勾选后作为独立系统段注入（标注为参考素材，与构思冲突时 AI 会先跟你确认）。改动勾选会重发系统段，可能重算供应商前缀缓存——建议一批勾好再聊。
+            </p>
+          </details>
 
           <div ref={scrollRef} style={{ maxHeight: 520, overflowY: "auto", marginTop: 10 }}>
             {messages.length === 0 && (
