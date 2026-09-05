@@ -389,7 +389,9 @@ export function TheaterPage() {
             messages: msgs,
             rollingSummary: summary || undefined,
             ...(archived.length || rolled.length ? { messagesArchive: [...archived, ...rolled] } : {}),
-            ...(due && base.config ? { config: { ...base.config, cadenceMark: userFloors } } : {}),
+            // 重新开始（allowClear）连带归零：副本节拍标记回到全未演，楼层定时游标重数
+            ...(allowClear ? { progress: {} } : {}),
+            ...(base.config && (due || allowClear) ? { config: { ...base.config, cadenceMark: userFloors } } : {}),
           };
         }),
       );
@@ -399,6 +401,17 @@ export function TheaterPage() {
       }
       // 本地写盘：全量快照覆盖（去抖在 writer 内部）
       if (saved) writerRef.current?.queue(roomFileName(saved.name ?? "", saved.id), exportJsonl(saved, assembly?.setup.charName ?? "角色"));
+      // 重新开始（用户确认过的清空，allowClear 唯一来源就是它）→ 房间正典一并清空：
+      // 整房重来 = 对话+滚动摘要+正典同归于零；作品级台账与他房正典分毫不动。
+      if (allowClear && saved) {
+        try {
+          const wiped = await queueRoomWrite(id, () => repos.clearRoomCanon(id));
+          setRoomCanon([]);
+          setNote(`重新开始：对话与滚动摘要已清空，房间正典同清 ${wiped ?? 0} 条（作品级台账未动）。`);
+        } catch {
+          setNote("重新开始：对话已清空，但房间正典清除失败——请到右栏台账面板手动清理。");
+        }
+      }
       // 楼层定时 → 场记自动整理（跑在注册表里，切页不中断；活动流里见）；
       // 显式传本房间 id 与幕名：写链等待期间切了房间也不能把场记打到别的房间
       if (due && saved && (saved.config?.agentEnabled ?? true)) void organize("auto", id, assembly?.sceneTitle);

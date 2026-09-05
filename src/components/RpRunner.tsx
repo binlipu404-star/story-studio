@@ -408,7 +408,7 @@ export function RpRunner({ setup, charName, userName, sceneLabel, greeting, disa
   const restart = () => {
     // v3.1-⑥ 清空对话=破坏性操作：确认+导出提醒（清空立即落库，不可恢复）
     const floors = turns.filter((t) => t.content.trim()).length;
-    if (floors > 1 && !window.confirm(`「重新开始」会立即清空并持久删除当前 ${floors} 条对话记录（房间正典保留，刷新也不回来）。建议先「⬇ 导出」留底。\n确定清空？`)) return;
+    if (floors > 1 && !window.confirm(`「重新开始」会立即清空并持久删除当前 ${floors} 条对话记录与滚动摘要，并清空本房间正典（房间整房重来；作品级台账不动，刷新也不回来）。建议先「⬇ 导出」留底。\n确定重来？`)) return;
     ctrlRef.current?.abort();
     const fresh = { id: newTurnId(), role: "char" as const, name: charName, content: greeting };
     setTurns([fresh]);

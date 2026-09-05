@@ -471,6 +471,13 @@ export async function deleteSession(id: ID): Promise<void> {
   });
 }
 
+/** 清空本房间正典（剧场「重新开始」整房重来；不动作品级台账、不动房间行本身）。返回删除条数。 */
+export async function clearRoomCanon(roomId: ID): Promise<number> {
+  const keys = await db.ledger.where("roomId").equals(roomId).primaryKeys();
+  await db.ledger.bulkDelete(keys);
+  return keys.length;
+}
+
 // ============================================================
 // 用户画像（全局，跨作品；{{user}} 形象管理）
 // ============================================================
