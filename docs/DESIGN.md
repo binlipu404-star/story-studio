@@ -1,6 +1,6 @@
 # Story Studio — 设计说明与自我剖析（审阅版）
 
-> 版本锚点：git HEAD ≥ `4557e25` 之后的 v4 轮（人物卡/世界书升级为顶层全局资产库 + 规模化 UI 加固，随后 GitHub 公开部署）。src 共 50 个 ts/tsx 文件、约 1.5 万行；逻辑测试基线 **756 断言 / 22 个测试文件**（v4 新增 16 条 flow/library.ts 可见集断言；真实 PNG 卡不入库，未设 `SS_TEST_PNG` 时 5 条 PNG 断言转为 2 条 skip，即 CI 上 total=751 skipped=2 failed=0）。此前 718→716 的唯一减少来自删除死函数 `rpSystemPrompt` 附带的 2 条其专属断言，属删死代码的合理收缩，非覆盖退化。
+> 版本锚点：git HEAD ≥ `ec490f5` 之后的 v4 轮（人物卡/世界书升级为顶层全局资产库 + 规模化 UI 加固，随后 GitHub 公开部署）。src 共 50 个 ts/tsx 文件、约 1.5 万行；逻辑测试基线 **756 断言 / 22 个测试文件**（v4 新增 16 条 flow/library.ts 可见集断言；真实 PNG 卡不入库，未设 `SS_TEST_PNG` 时 5 条 PNG 断言转为 2 条 skip，即 CI 上 total=751 skipped=2 failed=0）。此前 718→716 的唯一减少来自删除死函数 `rpSystemPrompt` 附带的 2 条其专属断言，属删死代码的合理收缩，非覆盖退化。
 > **术语对照**：产品把剧场的长期 RP 单元称为**「剧组」**（旧称「房间」，UI/文档已全量更名）。代码标识符与持久化键**保留 room 词根不动**（`activeRoom`/`queueRoomWrite`/`RPSession.kind:"theater"`/`ledger.roomId`/`prefs.lastRoomId` 等——改持久键需数据迁移，收益低风险高，明确不做）。读到「剧组」↔`room*` 并存即是此决策，不是遗漏。派生动词随隐喻走：开房→**开机**、整房重来→**整组重来**。
 > 本文档面向接手审阅的 AI/工程师。所有陈述均以仓库代码为准，标注了文件与行级线索；第 12 节是自认缺陷清单，请优先审阅该节。
 > 配套文件：`docs/ROADMAP.md`（里程碑史）、`README.md`（入口）、仓库根 `验收清单.md`（人工验收步骤，含 v3.1 手测清单）。
@@ -86,10 +86,10 @@ core/         types.ts 共享契约 + jobBus.ts 任务总线
 
 ### 3.2 核心实体速览（`core/types.ts`，325 行，逐字段有注释）
 
-- **Project**：title/synopsis/bible/lorebook + **v4 可选 castIds/loreIds**（从全局资产库选用的外部 id 列表；缺失 ⇔ 旧数据 = 只用自有资产）。删除选用列表不删资产本体；资产被删时门面同事务从各作品选用列表摘除引用。（曾有 `schema` 版本占位字段，因无任何读写方已于 94832dc 删除，见 §12.2。）
+- **Project**：title/synopsis/bible/lorebook + **v4 可选 castIds/loreIds**（从全局资产库选用的外部 id 列表；缺失 ⇔ 旧数据 = 只用自有资产）。删除选用列表不删资产本体；资产被删时门面同事务从各作品选用列表摘除引用。（曾有 `schema` 版本占位字段，因无任何读写方已于 b56beb2 删除，见 §12.2。）
 - **StoryBible**：`BibleField[]`（key 稳定键 + group 分组 + status: empty|rough|confirmed|**stale** + deps 依赖键）+ `BibleRevision[]`（修订前全量快照）。stale 传播逻辑在 `flow/interview.ts:mergeBibleUpdates`——上游字段变更时把 deps 引用它的字段标 stale，这是访谈页"哪里过期了"红点的来源。
 - **OutlineNode**：四级 level（volume/chapter/scene/beat）、order 排序、intent 叙事目的、beats、cast、foreshadows（setup/payoffIn/status）、status 五态（idea→draft→refined→tested→locked，`flow/outline.ts:canTransition` 定义合法迁移）、revision 计数。
-- **Character**：profile 五件套 + greeting/mesExample + `rawCard` 原样保留（**roundtrip 无损原则**：导入的 ST 卡导出时应一致）。v4 起 `projectId` 语义 =「主场作品」（溯源；全局页直建的卡为 `''`），可见性由 `Project.castIds` 决定（§8.9）。（曾有 `state`（台账动态状态摘要）与 `nick`（{{char}} 昵称）两字段，因无生产者/消费者已于 94832dc 删除，见 §12.2。）
+- **Character**：profile 五件套 + greeting/mesExample + `rawCard` 原样保留（**roundtrip 无损原则**：导入的 ST 卡导出时应一致）。v4 起 `projectId` 语义 =「主场作品」（溯源；全局页直建的卡为 `''`），可见性由 `Project.castIds` 决定（§8.9）。（曾有 `state`（台账动态状态摘要）与 `nick`（{{char}} 昵称）两字段，因无生产者/消费者已于 b56beb2 删除，见 §12.2。）
 - **LoreEntry**：完整 ST 语义映射（keys/secondaryKeys/constant/selective/caseSensitive/matchWholeWord/position/order/depth/sticky/group/scoring 等，见 types L111-138）。v4 起同 Character：全局资产 + 主场语义（§8.9）。
 - **RPSession = "剧组"**（§7.2 细说）：基础字段（cast/userName/messages/rollingSummary/status）+ v3 剧组字段（kind/name/pace/scopeMode/sandbox/script/progress/config 快照）+ v3.1 增 `messagesArchive`（折叠留底）与 `RPMessage.reasoning/notes`。
 - **LedgerRecord**：五类 type（event/item/relation/foreshadow/worldstate）+ actors（**名字字符串，无外键**）+ provenance{sessionId,msgId} 溯源 + roomId 绑定。
@@ -117,7 +117,7 @@ core/         types.ts 共享契约 + jobBus.ts 任务总线
 - **`chatTools()`**：function-calling 多轮循环；端点不返回 `choices[0].message.tool_calls` 或首请求即 4xx 时抛 **`ToolsUnsupportedError`**（专类异常）——这是场记降级的触发信号，不是通用错误。
 - **`estimateTokens()`**：启发式——CJK 每字 1 token，其余每 4 字符 1 token，偏保守。**不是**任何真实分词器（§12.4）。
 - **`prompts.ts`**（420 行）：全部模板集中地——访谈（interviewSystemPrompt 输出 BibleUpdate JSON）、总纲（MASTER_OUTLINE_SPEC JSON 协议 + masterToNodes 解析）、共创教练、幕拍生成、滚动摘要双版本（rollingSummaryPrompt 纯摘要 / rollingDigestPrompt 摘要+台账抽取）、试跑包（trialGreeting/trialAuthorNote/personaPromptBlock）、复盘（sessionRecapPrompt 输出节拍命中 JSON）。中文模板，指令措辞即产品语气。
-- ~~已知冗余：`prompts.ts` 里另有一个 `rpSystemPrompt(RpSystemOpts)` **无任何调用者**（死代码，与被使用的 `flow/rp.ts:rpSystemPrompt` 同名不同物，见 §12.1/§12.3）。~~ 已删（94832dc）。
+- ~~已知冗余：`prompts.ts` 里另有一个 `rpSystemPrompt(RpSystemOpts)` **无任何调用者**（死代码，与被使用的 `flow/rp.ts:rpSystemPrompt` 同名不同物，见 §12.1/§12.3）。~~ 已删（b56beb2）。
 
 ---
 
@@ -130,7 +130,7 @@ core/         types.ts 共享契约 + jobBus.ts 任务总线
 - **matcher.ts**（触发引擎，全库算法密度最高）：`matchLore(entries, settings, ctx, estimate)` 实现 keys/secondaryKeys+selective（AND/NOT-ANY/NOT-ALL）/constant/caseSensitive/wholeWord/position(before_char、after_char)/order 排序/**depth 注入位**/**sticky+cooldown**/**group 打分（显式启用才计，后幕优先）**。sticky/cooldown 是**有状态定时语义**：实现为"以整段历史确定性地重放状态机"（L215 注释），而非存计数器——好处是无状态可重放、可测（`matcher-timed.test.mjs` 专测），代价是每次全史重算。`random` 从 ctx 注入以便测试确定性。
 - **chatlog.ts**：ST chat 的 jsonl（`tavern-cards-chat-history` 头）解析与**反向导出** `toStChatJsonl`（mes/message 双写以兼容自家解析器吃回——导出物能被自己的导入器读回是显式测试目标）。
 - **persona.ts**：角色卡/JSON → Persona 种子（`personaSeedToPersona`，isDefault 由调用方裁决后经 repos 落库——种子转换与全局唯一性裁决分离）。
-- **outlinebook.ts**（flow 域）：把大纲幕序列编成 ST worldbook——幕粒度词条、`{{char}}/{{user}}` 宏保留、节拍键提取（`extractBeatKeys` 从拍文挑 ≤3 个触发键）、专属组名 STORY_GROUP 与协议声明（STORY_PROTOCOL 声明"已演退场=场间换书"等调度语义，曾按 ST 源码真相修正过一次——commit `893b3e2`）。
+- **outlinebook.ts**（flow 域）：把大纲幕序列编成 ST worldbook——幕粒度词条、`{{char}}/{{user}}` 宏保留、节拍键提取（`extractBeatKeys` 从拍文挑 ≤3 个触发键）、专属组名 STORY_GROUP 与协议声明（STORY_PROTOCOL 声明"已演退场=场间换书"等调度语义，曾按 ST 源码真相修正过一次——commit `0ec76c7`）。
 
 ---
 
@@ -199,7 +199,7 @@ File System Access API 目录句柄存 Dexie meta（刷新后重连需用户手�
 
 ### 7.5 v3.1 写安全架构（⑥——本库最近一次、也是最重要的攻坚）
 
-失血史（审计提交 9e454eb 修了 9 处）：流式/并发/切页任一时序都可能让"旧整行覆盖新行"。现行不变量集（全部在 TheaterPage/RpRunner/repos 三层协同）：
+失血史（审计提交 9374ed8 修了 9 处）：流式/并发/切页任一时序都可能让"旧整行覆盖新行"。现行不变量集（全部在 TheaterPage/RpRunner/repos 三层协同）：
 
 1. **单链串行**：所有剧组写必须走 `queueRoomWrite(roomId, fn)`（TheaterPage L301，Map<roomId, Promise 链>）——同一剧组的写永不交叠。
 2. **读改写事务**：链内一律 `repos.updateSession(id, cur => …)`（repos L436，Dexie 事务内基于**最新行**合并），禁止拿着页面渲染态整行 save。
@@ -207,7 +207,7 @@ File System Access API 目录句柄存 Dexie meta（刷新后重连需用户手�
 4. **折叠留底**：allowFold 时被折回合并入 `messagesArchive`（TheaterPage L383-391，按 id 去重追加，永不回注）。
 5. **稳定 id 端到端**：`RpTurn.id`（newTurnId，crypto.randomUUID 兜底时间戳）→ 持久化为 RPMessage.id → turnsToMessages **按 id 对齐**（无 id 旧数据按索引回退）——编辑/删除/并发写不错位。
 6. **双标签页锁**：`navigator.locks.request('ss-rp-room-'+id, {ifAvailable:true})`（TheaterPage L152-159）拿不到 → 整页**只读** + 🔒 横幅 + RpRunner disabled。**不支持 locks 的浏览器不拦（老行为）**——已知边界。
-7. **流式半句保护**：autosave 600ms 去抖 + pagehide/visibilitychange 立即 flush；regen 失败路径 `preserve` 参数还原现场，末条为 char 时转 swipe 候选（边角修复 0ecf190）。
+7. **流式半句保护**：autosave 600ms 去抖 + pagehide/visibilitychange 立即 flush；regen 失败路径 `preserve` 参数还原现场，末条为 char 时转 swipe 候选（边角修复 42349d7）。
 8. **greeting 重水合守卫**（M4）：greeting prop 变化但本地已有用户楼层（id 集比对）→ 跳过重水合，不吞对话。
 9. **删除保护**：删剧组先自动导出 jsonl 再 confirm；删末条消息 confirm。
 
@@ -305,7 +305,7 @@ AI 开放式访谈边谈边长草稿：`interviewSystemPrompt` 要求模型输�
 
 ## 12. 已知缺陷与技术债（严肃自评，请优先审阅）
 
-**死代码/死字段**（1–2 已于 94832dc 清偿，留档备查）
+**死代码/死字段**（1–2 已于 b56beb2 清偿，留档备查）
 1. ~~`ai/prompts.ts:430 rpSystemPrompt(RpSystemOpts)` 零调用者；且与 `flow/rp.ts:169 rpSystemPrompt` **同名不同物**——极易误读，建议删除或改名。~~ **已删**（连带其 2 条专属测试断言，718→716）。
 2. ~~`RPMessage.ooc/branchOf/editedFrom` 三字段无任何生产者/消费者（OOC 与分支树未实现）；`Project.schema` 版本字段无人读写；`Character.state` 闭环浅（台账不自动回写它）。~~ **已删**（含 `Character.nick`、prefs 的 `lastCharId/lastPersonaId/scopeMode` 只写不读、handoff 的 `auto` 死分支）。OOC/分支树若将来实装，按语义重新引入字段即可。
 3. 根目录 `scripts/probe-*.mjs`（probe-db-v2 等）是一次性实证脚本，不在测试基线内，价值已兑现但仍在库。
@@ -325,7 +325,7 @@ AI 开放式访谈边谈边长草稿：`interviewSystemPrompt` 要求模型输�
 13. API key 明文持久在 localStorage（`story-studio.config`）——纯浏览器形态无秘密保管层，共用机器即共见；桌面壳/后端代理是根治路径（见 §2.3 边界）。
 
 **结构性债**
-14. 页面巨型化：OutlinePage 1497 / TheaterPage 1105 / TrialPage 944 行；无 ErrorBoundary（任何渲染期异常白屏整页）；无路由（深链不可能）；无组件抽象纪律（内联样式复制粘贴——94832dc 已把跨页**非 UI** 纯工具收敛到 `core/uiUtils.ts`，内联样式与 Badge 仍按纪律留在页内）。
+14. 页面巨型化：OutlinePage 1497 / TheaterPage 1105 / TrialPage 944 行；无 ErrorBoundary（任何渲染期异常白屏整页）；无路由（深链不可能）；无组件抽象纪律（内联样式复制粘贴——b56beb2 已把跨页**非 UI** 纯工具收敛到 `core/uiUtils.ts`，内联样式与 Badge 仍按纪律留在页内）。
 15. **React 层零自动化测试**：756 断言全部覆盖非 UI 逻辑；§7.5 的九条写安全不变量里 6-9 条只靠人工验收（`验收清单.md`）。Dexie 层同样无常规测试（仅一次性 fake-indexeddb probe）。
 16. 双"生命周期脱离组件"实现（jobBus 与 agentrun）结构相似未收敛；prefs/progress/handoff 三个 localStorage 壳也各自发明了一次 storage() 探测——可提炼但未提炼（有意识：三处校验语义不同，合并收益低于风险）。
 17. **v4 全局库的已知边界**：`listAll*`/可见集全表扫（万级需索引或虚拟化）；`nextUid` 全表扫取号；选用列表读侧悬空容忍但**作品改名/删卡不级联改** OutlineNode.cast 与 RPSession.cast 里的 id（读侧同样容错，语义=历史引用允许悬空）；全局页批量删除按"当前过滤视图"作用——过滤后全选删除与全库删除在按钮文案上区分，但纪律仍是用户自查。项目包导出打包的是**可见集**（含共享自他作品的资产）——ST 通用格式无差别，但"从包里重建全局库"的回灌器尚不存在。
@@ -339,7 +339,7 @@ npm run typecheck      # 期望 exit 0
 npm run test:logic     # 本机（设 SS_TEST_PNG 指向真实 PNG 卡）期望 total=756 failed=0；CI 无卡时 total=751 skipped=2 failed=0。若你新增测试，只许 >756
 npm run build          # tsc --noEmit && vite build
 npm run test:fixtures  # 用 docs/fixtures 下真实 ST 样本跑解析器
-git log --oneline      # 21 个提交 = 完整编年史（45ef4ab → 94832dc）
+git log --oneline      # 完整编年史（a186ee4 → b56beb2 → 至今；提交者为 GitHub noreply 邮箱）
 ```
 
 人工路径：README「快速开始」→ 设置页填一个 OpenAI 兼容端点 → 作品页新建→访谈→大纲→试跑导包；剧场页新建剧组→聊天→观察场记活动流与 token 预算条。
