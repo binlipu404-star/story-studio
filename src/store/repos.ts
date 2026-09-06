@@ -6,9 +6,9 @@
 //   - 先读后写有分配语义的写入（order 追加、uid 取号、级联删除）放进
 //     Dexie 事务，保证原子性与并发标签页下不重号。
 // ============================================================
-import Dexie from "dexie";
 import { db } from "./db";
 import { DEFAULT_BIBLE_FIELDS, DEFAULT_LOREBOOK_SETTINGS } from "./templates";
+import { filterVisible } from "../flow/library";
 import type {
   Character,
   CharacterProfile,
@@ -98,15 +98,16 @@ export async function updateProject(id: ID, patch: ProjectPatch): Promise<Projec
   return db.projects.get(id);
 }
 
-/** 级联删除：作品 + 大纲/人物/世界书/会话/台账全部关联数据，单事务原子完成。 */
+/** 级联删除：作品 + 大纲/会话/台账。
+ *  v4：人物卡/世界书是**全局资产库**，不随作品消亡——删作品只解除选用关系
+ *  （Project 行本身消失，其 castIds/loreIds 随之消失），资产行保留在全局库。
+ *  资产被删时由 removeCharacter/removeLoreEntry 负责跨作品摘除选用引用。 */
 export async function deleteProjectCascade(id: ID): Promise<void> {
   await db.transaction(
     "rw",
-    [db.projects, db.outlineNodes, db.characters, db.loreEntries, db.sessions, db.ledger],
+    [db.projects, db.outlineNodes, db.sessions, db.ledger],
     async () => {
       await db.outlineNodes.where("projectId").equals(id).delete();
-      await db.characters.where("projectId").equals(id).delete();
-      await db.loreEntries.where("projectId").equals(id).delete();
       await db.sessions.where("projectId").equals(id).delete();
       await db.ledger.where("projectId").equals(id).delete();
       await db.projects.delete(id);
@@ -220,15 +221,17 @@ export async function removeNodeCascade(projectId: ID, id: ID): Promise<void> {
 }
 
 // ============================================================
-// 人物
+// 人物（v4：全局资产库。projectId=主场作品（''=全局直建），
+// 作品可见集 = 自有 ∪ Project.castIds 选用，见 flow/library.ts）
 // ============================================================
 
 function emptyProfile(): CharacterProfile {
   return { appearance: "", personality: "", background: "", speechStyle: "", exampleLines: [] };
 }
 
-/** 新增人物：默认空 profile、source="manual"、cardFormat="internal"；partial 覆盖默认。 */
-export async function addCharacter(projectId: ID, partial: CharacterPatch = {}): Promise<Character> {
+/** 新增人物：ownerProjectId='' 表示从全局卡库直建（无主场作品）。
+ *  默认空 profile、source="manual"、cardFormat="internal"；partial 覆盖默认。 */
+export async function addCharacter(ownerProjectId: ID, partial: CharacterPatch = {}): Promise<Character> {
   const now = Date.now();
   const character: Character = {
     name: "",
@@ -237,7 +240,7 @@ export async function addCharacter(projectId: ID, partial: CharacterPatch = {}):
     cardFormat: "internal",
     ...partial,
     id: uid(),
-    projectId,
+    projectId: ownerProjectId,
     createdAt: now,
     updatedAt: now,
   };
@@ -246,10 +249,29 @@ export async function addCharacter(projectId: ID, partial: CharacterPatch = {}):
   return character;
 }
 
-/** 人物列表：按创建时间稳定排序。 */
-export async function listCharacters(projectId: ID): Promise<Character[]> {
-  const rows = await db.characters.where("projectId").equals(projectId).toArray();
+function sortCharacters(rows: Character[]): Character[] {
   return rows.sort((a, b) => a.createdAt - b.createdAt || a.name.localeCompare(b.name, "zh-CN"));
+}
+
+/** 全局卡库全量（顶层「人物卡」页）：按创建时间稳定排序。 */
+export async function listAllCharacters(): Promise<Character[]> {
+  return sortCharacters(await db.characters.toArray());
+}
+
+/** 作品可见卡 = 自有（projectId 命中）∪ 选用（castIds 命中）。
+ *  所有作品侧页面唯一读入口；选用列表缺失（旧数据）⇔ 只用自有。悬空 id 自动忽略。 */
+export async function listCharacters(projectId: ID): Promise<Character[]> {
+  const [rows, project] = await Promise.all([db.characters.toArray(), db.projects.get(projectId)]);
+  return filterVisible(sortCharacters(rows), projectId, project?.castIds);
+}
+
+/** 选用/取消选用一张全局卡（不校验存在性：读侧悬空容忍）。 */
+export async function selectCharacter(projectId: ID, characterId: ID, on: boolean): Promise<void> {
+  const p = await db.projects.get(projectId);
+  if (!p) return;
+  const cur = p.castIds ?? [];
+  const next = on ? (cur.includes(characterId) ? cur : [...cur, characterId]) : cur.filter((x) => x !== characterId);
+  await db.projects.update(projectId, { castIds: next, updatedAt: Date.now() });
 }
 
 /** 局部更新人物：updatedAt 刷新。返回更新后整条（不存在则 undefined）。 */
@@ -258,30 +280,37 @@ export async function updateCharacter(id: ID, patch: CharacterPatch): Promise<Ch
   return db.characters.get(id);
 }
 
+/** 删除全局卡：同事务从所有作品的选用列表摘除引用（读侧本就悬空容忍，这里只是不留垃圾）。 */
 export async function removeCharacter(id: ID): Promise<void> {
-  await db.characters.delete(id);
+  await db.transaction("rw", [db.characters, db.projects], async () => {
+    await db.characters.delete(id);
+    for (const p of await db.projects.toArray()) {
+      if (p.castIds?.includes(id)) {
+        await db.projects.update(p.id, { castIds: p.castIds.filter((x) => x !== id) });
+      }
+    }
+  });
 }
 
 // ============================================================
-// 世界书
+// 世界书（v4：全局资产库，语义同「人物」段——主场 + 选用列表）
 // ============================================================
 
-/** 下一个 ST 语义整型 uid：现有最大值 +1（走 [projectId+uid] 索引取尾）。 */
-export async function nextUid(projectId: ID): Promise<number> {
-  const last = await db.loreEntries
-    .where("[projectId+uid]")
-    .between([projectId, Dexie.minKey], [projectId, Dexie.maxKey])
-    .last();
-  return (last?.uid ?? 0) + 1;
+/** 全局库 uid 取号：全库最大值 +1（uid 是 ST 语义整型号，全局一条序列防撞）。
+ *  零迁移：schema v4 只有 [projectId+uid] 复合索引，全表扫取最大（词条量级 ≤ 数千，可接受）。 */
+export async function nextUid(): Promise<number> {
+  const rows = await db.loreEntries.toArray();
+  return rows.reduce((m, e) => Math.max(m, e.uid), 0) + 1;
 }
 
 /**
- * 新增词条：默认全字段（order 追加到尾部、uid 自动取号、probability=100、enabled=true…），
+ * 新增词条：默认全字段（order 追加到**同主场**尾部、uid 全库取号、probability=100、enabled=true…），
  * partial 可覆盖任意非系统字段（如 ST 导入时显式给 uid/order）。取号+追加在事务内。
+ * ownerProjectId='' 表示从全局词条库直建。
  */
-export async function addLoreEntry(projectId: ID, partial: LoreEntryPatch = {}): Promise<LoreEntry> {
+export async function addLoreEntry(ownerProjectId: ID, partial: LoreEntryPatch = {}): Promise<LoreEntry> {
   return db.transaction("rw", db.loreEntries, async () => {
-    const existing = await db.loreEntries.where("projectId").equals(projectId).toArray();
+    const existing = await db.loreEntries.where("projectId").equals(ownerProjectId).toArray();
     const maxOrder = existing.reduce((m, e) => Math.max(m, e.order), -1);
     const entry: LoreEntry = {
       comment: "",
@@ -307,8 +336,8 @@ export async function addLoreEntry(projectId: ID, partial: LoreEntryPatch = {}):
       extensions: {},
       ...partial,
       id: uid(),
-      projectId,
-      uid: await nextUid(projectId),
+      projectId: ownerProjectId,
+      uid: await nextUid(),
       order: maxOrder + 1,
     };
     if (partial.uid !== undefined) entry.uid = partial.uid; // 显式 uid（导入场景）优先
@@ -318,10 +347,28 @@ export async function addLoreEntry(projectId: ID, partial: LoreEntryPatch = {}):
   });
 }
 
-/** 词条列表：按 order（insertion_order）升序。 */
-export async function listLoreEntries(projectId: ID): Promise<LoreEntry[]> {
-  const rows = await db.loreEntries.where("projectId").equals(projectId).toArray();
+function sortLore(rows: LoreEntry[]): LoreEntry[] {
   return rows.sort((a, b) => a.order - b.order || a.uid - b.uid);
+}
+
+/** 全局词条库全量（顶层「世界书」页）：按 order 升序（insertion_order）。 */
+export async function listAllLoreEntries(): Promise<LoreEntry[]> {
+  return sortLore(await db.loreEntries.toArray());
+}
+
+/** 作品可见词条 = 自有 ∪ 选用（loreIds）。悬空 id 自动忽略。 */
+export async function listLoreEntries(projectId: ID): Promise<LoreEntry[]> {
+  const [rows, project] = await Promise.all([db.loreEntries.toArray(), db.projects.get(projectId)]);
+  return filterVisible(sortLore(rows), projectId, project?.loreIds);
+}
+
+/** 选用/取消选用一条全局词条。 */
+export async function selectLoreEntry(projectId: ID, entryId: ID, on: boolean): Promise<void> {
+  const p = await db.projects.get(projectId);
+  if (!p) return;
+  const cur = p.loreIds ?? [];
+  const next = on ? (cur.includes(entryId) ? cur : [...cur, entryId]) : cur.filter((x) => x !== entryId);
+  await db.projects.update(projectId, { loreIds: next, updatedAt: Date.now() });
 }
 
 /** 局部更新词条（LoreEntry 契约无时间戳字段，故不动任何时间）。返回更新后整条。 */
@@ -330,8 +377,22 @@ export async function updateLoreEntry(id: ID, patch: LoreEntryPatch): Promise<Lo
   return db.loreEntries.get(id);
 }
 
+/** 删除全局词条：同事务从所有作品的选用列表摘除引用。 */
 export async function removeLoreEntry(id: ID): Promise<void> {
-  await db.loreEntries.delete(id);
+  await removeLoreEntries([id]);
+}
+
+/** 批量删除全局词条（全局页「删除视图内词条」用）：同事务摘除全部选用引用。 */
+export async function removeLoreEntries(ids: ID[]): Promise<void> {
+  const idSet = new Set(ids);
+  await db.transaction("rw", [db.loreEntries, db.projects], async () => {
+    await db.loreEntries.bulkDelete(ids);
+    for (const p of await db.projects.toArray()) {
+      if (p.loreIds?.some((x) => idSet.has(x))) {
+        await db.projects.update(p.id, { loreIds: p.loreIds.filter((x) => !idSet.has(x)) });
+      }
+    }
+  });
 }
 
 // ============================================================

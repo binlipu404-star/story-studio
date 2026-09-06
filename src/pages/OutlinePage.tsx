@@ -1391,11 +1391,11 @@ function NodeEditor({ node, characters, busy, pathLabel, onSave, onStatus, onDel
       </div>
 
       <div style={{ ...fieldStack, marginTop: 8 }}>
-        <span>出场人物 cast（来自项目人物库）</span>
+        <span>出场人物 cast（来自本作品可用人物 = 自有 ∪「📦 资产」选用）</span>
         {characters.length === 0 ? (
-          <span className="muted">人物库为空：先到「人物卡」页添加人物。</span>
+          <span className="muted">可用人物为空：到顶层「👤 人物卡」页建卡，再到「📦 资产」页签选用。</span>
         ) : (
-          <div className="row" style={{ flexWrap: "wrap" }}>
+          <div className="row" style={{ flexWrap: "wrap", maxHeight: 120, overflowY: "auto" }}>
             {characters.map((c) => (
               <label key={c.id} className="row" style={{ gap: 4, fontSize: 13, color: "var(--text)" }}>
                 <input type="checkbox" checked={cast.includes(c.id)} onChange={(e) => toggleCast(c.id, e.target.checked)} />

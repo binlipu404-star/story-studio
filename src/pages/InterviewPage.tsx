@@ -5,7 +5,7 @@
 // 约定：数据读写只经 store/repos 门面；状态机复用 flow/interview 纯函数；
 //       每次落库前把「保存前快照」压入 bible.revisions（裁剪到最近 20 条）。
 // ============================================================
-import { useEffect, useRef, useState, type CSSProperties } from "react";
+import { useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import type { BibleField, BibleFieldStatus, BibleRevision, ChatMessage, Character, LoreEntry, Persona, Project } from "../core/types";
 import * as repos from "../store/repos";
 import { errMsg, isAbort } from "../core/uiUtils";
@@ -329,6 +329,14 @@ export function InterviewPage({ projectId }: { projectId: string }) {
       .map((p) => ({ id: p.id, name: p.name, block: personaPromptBlock(p) })),
   });
   const selCount = sel.chars.length + sel.lore.length + sel.personas.length;
+  // 规模化（v4 全局库 500+ 词条）：勾选态改 Set 查找；列内搜索过滤；<details> 收起不渲染条目。
+  const selSets = useMemo(
+    () => ({ chars: new Set(sel.chars), lore: new Set(sel.lore), personas: new Set(sel.personas) }),
+    [sel],
+  );
+  const [matsOpen, setMatsOpen] = useState(false);
+  const [matsQ, setMatsQ] = useState(""); // 三列共用一个过滤词（够用且省三个 state）
+  const matsFilter = (label: string) => !matsQ || label.toLowerCase().includes(matsQ.toLowerCase());
 
   // firstFocus = 当前问题焦点行；若「最近一轮未采纳的提案」已覆盖它，则高亮让位给提案卡
   const focus = firstFocus(fields);
@@ -633,41 +641,56 @@ export function InterviewPage({ projectId }: { projectId: string }) {
           </div>
 
           {/* ---------- v3.2 辅助选材：勾选已有素材辅助 AI 理解与构思 ---------- */}
-          <details style={{ marginTop: 8 }}>
+          <details style={{ marginTop: 8 }} open={matsOpen} onToggle={(e) => setMatsOpen(e.currentTarget.open)}>
             <summary className="muted" style={{ fontSize: 13, cursor: "pointer" }}>
               辅助选材：已选 {selCount} 项（人物卡 {sel.chars.length} · 世界书 {sel.lore.length} · 人设 {sel.personas.length}）
               {selCount > 0 && " —— 每轮随对话注入给 AI"}
             </summary>
-            {matsError && <div style={{ color: "#c62828", fontSize: 12, marginTop: 4 }}>素材清单载入失败：{matsError}</div>}
-            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 10, marginTop: 8, fontSize: 13 }}>
-              {[
-                { kind: "chars" as const, title: "人物卡", empty: "人物库为空", items: allChars.map((c) => ({ id: c.id, label: c.name || "（未命名）" })) },
-                { kind: "lore" as const, title: "世界书词条", empty: "世界书为空", items: allLore.map((e) => ({ id: e.id, label: e.comment || "（未命名）", hint: e.constant ? "常驻" : e.keys.slice(0, 3).join("/") })) },
-                { kind: "personas" as const, title: "用户人设", empty: "人设库为空", items: allPersonas.map((p) => ({ id: p.id, label: p.name || "（未命名）" })) },
-              ].map((col) => (
-                <div key={col.kind} style={{ minWidth: 0 }}>
-                  <strong style={{ fontSize: 12 }}>{col.title}</strong>
-                  {col.items.length === 0 ? (
-                    <p className="muted" style={{ fontSize: 12, margin: "4px 0" }}>{col.empty}</p>
-                  ) : (
-                    <div style={{ maxHeight: 140, overflowY: "auto", marginTop: 4 }}>
-                      {col.items.map((it) => (
-                        <label key={it.id} style={{ display: "block", cursor: "pointer", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
-                          <input
-                            type="checkbox"
-                            checked={sel[col.kind].includes(it.id)}
-                            disabled={streaming}
-                            onChange={() => toggleSel(col.kind, it.id)}
-                          />{" "}
-                          {it.label}
-                          {"hint" in it && it.hint ? <span className="muted"> · {it.hint}</span> : null}
-                        </label>
-                      ))}
-                    </div>
-                  )}
+            {matsOpen && (
+              <>
+                {matsError && <div style={{ color: "#c62828", fontSize: 12, marginTop: 4 }}>素材清单载入失败：{matsError}</div>}
+                <input
+                  value={matsQ}
+                  onChange={(e) => setMatsQ(e.target.value)}
+                  placeholder="在下列三列里搜索过滤…"
+                  style={{ marginTop: 8, minWidth: 0, maxWidth: 280, fontSize: 13 }}
+                />
+                <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(160px, 1fr))", gap: 10, marginTop: 8, fontSize: 13 }}>
+                  {[
+                    { kind: "chars" as const, title: "人物卡", empty: "人物库为空", items: allChars.map((c): { id: string; label: string; hint?: string } => ({ id: c.id, label: c.name || "（未命名）" })) },
+                    { kind: "lore" as const, title: "世界书词条", empty: "世界书为空", items: allLore.map((e): { id: string; label: string; hint?: string } => ({ id: e.id, label: e.comment || "（未命名）", hint: e.constant ? "常驻" : e.keys.slice(0, 3).join("/") })) },
+                    { kind: "personas" as const, title: "用户人设", empty: "人设库为空", items: allPersonas.map((p): { id: string; label: string; hint?: string } => ({ id: p.id, label: p.name || "（未命名）" })) },
+                  ].map((col) => {
+                    const items = col.items.filter((it) => matsFilter(it.label));
+                    return (
+                      <div key={col.kind} style={{ minWidth: 0 }}>
+                        <strong style={{ fontSize: 12 }}>{col.title}</strong>
+                        {col.items.length === 0 ? (
+                          <p className="muted" style={{ fontSize: 12, margin: "4px 0" }}>{col.empty}</p>
+                        ) : items.length === 0 ? (
+                          <p className="muted" style={{ fontSize: 12, margin: "4px 0" }}>无匹配（{matsQ}）</p>
+                        ) : (
+                          <div style={{ maxHeight: 140, overflowY: "auto", marginTop: 4 }}>
+                            {items.map((it) => (
+                              <label key={it.id} style={{ display: "block", cursor: "pointer", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+                                <input
+                                  type="checkbox"
+                                  checked={selSets[col.kind].has(it.id)}
+                                  disabled={streaming}
+                                  onChange={() => toggleSel(col.kind, it.id)}
+                                />{" "}
+                                {it.label}
+                                {"hint" in it && it.hint ? <span className="muted"> · {it.hint}</span> : null}
+                              </label>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
                 </div>
-              ))}
-            </div>
+              </>
+            )}
             <p className="muted" style={{ fontSize: 12, marginBottom: 0 }}>
               勾选后作为独立系统段注入（标注为参考素材，与构思冲突时 AI 会先跟你确认）。改动勾选会重发系统段，可能重算供应商前缀缓存——建议一批勾好再聊。
             </p>

@@ -169,7 +169,7 @@ export function RoomLedgerPanel({
         {timeline.map(([d, list]) => (
           <div key={d}>
             <div className="muted" style={{ margin: "6px 0 2px", fontWeight: 600, fontSize: 12 }}>{d}</div>
-            {list.map((r) => (
+            {list.slice(0, 30).map((r) => (
               <div key={r.id} style={{ display: "flex", gap: 6, padding: "3px 0", alignItems: "flex-start" }}>
                 <span className="muted" style={{ whiteSpace: "nowrap", fontSize: 12 }}>{badge(r.type)}</span>
                 {editor(r.id) ?? (
@@ -186,6 +186,9 @@ export function RoomLedgerPanel({
                 )}
               </div>
             ))}
+            {list.length > 30 && (
+              <div className="muted" style={{ fontSize: 11 }}>…该日还有 {list.length - 30} 条未显示（正典都在库里，用导出查看全量）</div>
+            )}
           </div>
         ))}
         {roomRejected.length > 0 && (
@@ -211,7 +214,7 @@ export function RoomLedgerPanel({
         {projProposed.length > 0 && (
           <div style={{ marginTop: 4 }}>
             <b style={{ fontSize: 12 }}>待确认提案（{projProposed.length}）</b>
-            {projProposed.map((r) => (
+            {projProposed.slice(0, 40).map((r) => (
               <div key={r.id} style={{ border: "1px solid var(--line)", borderRadius: 8, padding: 6, marginTop: 4 }}>
                 <div className="row" style={{ alignItems: "flex-start", gap: 6 }}>
                   <span className="muted" style={{ whiteSpace: "nowrap", fontSize: 12 }}>{badge(r.type)}</span>

@@ -587,7 +587,8 @@ export function TheaterPage() {
   };
 
   const deleteRoom = async (room: RPSession) => {
-    if (!window.confirm(`删除剧组「${room.name ?? room.id}」？其对话与剧组正典（${room.id.slice(0, 6)}…绑定台账）一并删除，不可撤销。`)) return;
+    const nm = (room.name ?? room.id).slice(0, 20); // 审计 P1：长名弹窗截断
+    if (!window.confirm(`删除剧组「${nm}」？其对话与剧组正典（${room.id.slice(0, 6)}…绑定台账）一并删除，不可撤销。`)) return;
     // M5 留底：先自动导出一份 jsonl 落盘（磁盘旧快照不会被删，双保险）
     try {
       // 角色名按**本剧组**推导（旧版误用当前活动剧组的装配名）
@@ -783,7 +784,7 @@ export function TheaterPage() {
   return (
     <div style={{ display: "flex", gap: 14, alignItems: "flex-start" }}>
       {/* ============ 左栏：剧组列表 ============ */}
-      <aside style={{ width: 232, flexShrink: 0, display: "grid", gap: 8 }}>
+      <aside style={{ width: 232, flexShrink: 0, minWidth: 0, display: "grid", gap: 8, position: "sticky", top: 8, maxHeight: "calc(100vh - 100px)", overflowY: "auto" }}>
         <button onClick={() => setCreating((v) => !v)}>{creating ? "收起新建" : "＋ 新建剧组"}</button>
         {creating && (
           <div className="panel" style={{ display: "grid", gap: 6 }}>
@@ -848,6 +849,7 @@ export function TheaterPage() {
               value={nf.charId}
               onChange={(e) => setNf({ ...nf, charId: e.target.value })}
               title="扮演对手的角色卡；不选=旁白叙述体"
+              style={{ width: "100%", minWidth: 0 }}
             >
               <option value="">角色卡 · 旁白演绎（不用卡）</option>
               {nfChars.map((c) => (
@@ -898,7 +900,9 @@ export function TheaterPage() {
                   <button onClick={() => setRenameId("")}>×</button>
                 </span>
               ) : (
-                <b style={{ fontSize: 13 }}>{r.name ?? "（未命名）"}</b>
+                <b style={{ fontSize: 13, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={r.name ?? ""}>
+                  {r.name ?? "（未命名）"}
+                </b>
               )}
               <span style={{ fontSize: 11, color: "var(--muted)" }}>
                 {projects.find((p) => p.id === r.projectId)?.title ?? "（作品已删）"} ·{" "}

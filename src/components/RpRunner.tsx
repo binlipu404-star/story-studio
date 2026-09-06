@@ -458,15 +458,19 @@ export function RpRunner({ setup, charName, userName, sceneLabel, greeting, disa
       {/* 上下文预算条：分段 token 占用（悬停看段名/处置） */}
       <div style={{ marginTop: 6 }}>
         <div style={{ display: "flex", height: 10, borderRadius: 5, overflow: "hidden", border: "1px solid var(--line)", background: "var(--bg)" }}>
-          {assembly.sections
-            .filter((s) => s.kept && s.tokens > 0)
-            .map((s, i) => (
-              <div
-                key={`${s.key}-${i}`}
-                title={`${s.label} ≈${s.tokens} tok${s.note ? `（${s.note}）` : ""}`}
-                style={{ width: `${(s.tokens / budgetTotal) * 100}%`, minWidth: 2, background: SEC_COLORS[s.key] ?? "#999" }}
-              />
-            ))}
+          {(() => {
+            // 超预算（大量词条注入的常态）时按实际总量归一，避免各段宽度总和 >100% 被静默裁掉右段
+            const norm = Math.max(budgetTotal, assembly.totalTokens);
+            return assembly.sections
+              .filter((s) => s.kept && s.tokens > 0)
+              .map((s, i) => (
+                <div
+                  key={`${s.key}-${i}`}
+                  title={`${s.label} ≈${s.tokens} tok${s.note ? `（${s.note}）` : ""}`}
+                  style={{ width: `${(s.tokens / norm) * 100}%`, minWidth: 2, background: SEC_COLORS[s.key] ?? "#999" }}
+                />
+              ));
+          })()}
         </div>
         <div className="row" style={{ gap: 10, flexWrap: "wrap", marginTop: 3, fontSize: 11 }}>
           <span className="muted">

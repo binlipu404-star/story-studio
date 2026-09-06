@@ -16,6 +16,10 @@ export interface Project {
   synopsis: string; // 一句话梗概（访谈产物，可随时更新）
   bible: StoryBible; // 构思档案直接内嵌（体量小、整体版本化方便）
   lorebook: LorebookSettings; // 世界书全局参数
+  // v4 全局资产库：人物卡/世界书是全局数据，作品侧只持「选用列表」。
+  // 可选字段（零迁移）：缺失 ⇔ 旧数据，语义 = 只用自有资产（projectId 命中本作品的行）。
+  castIds?: ID[]; // 选用的外部人物卡（Character.id；自有卡不必列，恒可见）
+  loreIds?: ID[]; // 选用的外部世界书词条（LoreEntry.id；同上）
   createdAt: number;
   updatedAt: number;
 }
@@ -94,7 +98,7 @@ export interface CharacterProfile {
 
 export interface Character {
   id: ID;
-  projectId: ID;
+  projectId: ID; // 主场作品（v4 起仅溯源用：'' = 全局建卡）；可见性由 Project.castIds 选用列表决定
   name: string;
   profile: CharacterProfile;
   scenario?: string;
@@ -110,7 +114,7 @@ export interface Character {
 // ---------- 世界书（内部规范化形态）----------
 export interface LoreEntry {
   id: ID;
-  projectId: ID;
+  projectId: ID; // 主场作品（v4 起仅溯源用：'' = 全局建词条）；可见性由 Project.loreIds 选用列表决定
   uid: number; // ST 语义里的整型 id
   comment: string; // 词条名/备注
   content: string;

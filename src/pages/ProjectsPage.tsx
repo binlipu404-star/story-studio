@@ -14,22 +14,28 @@ import { loadProgress, saveProgress } from "../flow/progress";
 import { InterviewPage } from "./InterviewPage";
 import { OutlinePage } from "./OutlinePage";
 import { TrialPage } from "./TrialPage";
-import { CastPage } from "./CastPage";
-import { LorePage } from "./LorePage";
+import { ProjectAssetsPanel } from "../components/ProjectAssetsPanel";
 
-// v3.1-④：作品工作区不再有「台账」页签——台账整体迁入 🎭 RP 剧场（每剧组独立）
-type WsTab = "interview" | "outline" | "trial" | "cast" | "lore";
+// v3.1-④：作品工作区不再有「台账」页签——台账整体迁入 🎭 RP 剧场（每剧组独立）。
+// v4：人物卡/世界书升为顶层全局库，工作区对应页签换成「📦 资产」（本作品选用哪些全局资产）。
+type WsTab = "interview" | "outline" | "trial" | "assets";
 const WS_TABS: { id: WsTab; label: string }[] = [
   { id: "interview", label: "构思访谈" },
   { id: "outline", label: "大纲工作台" },
   { id: "trial", label: "ST 试跑" },
-  { id: "cast", label: "人物卡" },
-  { id: "lore", label: "世界书" },
+  { id: "assets", label: "📦 资产" },
 ];
 
 // ------------------------------------------------------------
 // 入口：作品列表 + 新建表单；点开进入 ProjectWorkspace（同文件组件）
 // ------------------------------------------------------------
+
+/** confirm/按钮里的作品名截断（审计 P1：长名把弹窗与按钮撑爆） */
+function shortTitle(t: string, n = 24): string {
+  const s = t.trim() || "（未命名）";
+  return s.length > n ? `${s.slice(0, n)}…` : s;
+}
+
 export function ProjectsPage() {
   const [projects, setProjects] = useState<Project[]>([]);
   const [loaded, setLoaded] = useState(false);
@@ -84,6 +90,7 @@ export function ProjectsPage() {
   if (open) {
     return (
       <ProjectWorkspace
+        key={open.id}
         project={open}
         onBack={() => {
           setOpen(null);
@@ -110,7 +117,7 @@ export function ProjectsPage() {
   const removeProject = async (p: Project) => {
     if (
       !window.confirm(
-        `删除作品《${p.title}》及其全部数据（大纲/人物/世界书/会话/台账/RP 剧场中挂在本作品下的全部剧组与剧组正典）？此操作不可恢复。`,
+        `删除作品《${shortTitle(p.title)}》及其大纲/会话/台账/RP 剧场中挂在本作品下的全部剧组与剧组正典？\n注意：人物卡与世界书是全局资产库，**不会**随作品删除。此操作不可恢复。`,
       )
     ) {
       return;
@@ -149,9 +156,14 @@ export function ProjectsPage() {
         {loaded && !error && projects.length === 0 && <p className="muted">还没有作品，先新建一个。</p>}
         {projects.map((p) => (
           <div className="panel" key={p.id}>
-            <div className="row">
-              <button className="primary" onClick={() => setOpen(p)}>
-                {p.title}
+            <div className="row" style={{ flexWrap: "wrap" }}>
+              <button
+                className="primary"
+                onClick={() => setOpen(p)}
+                style={{ maxWidth: "60%", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}
+                title={p.title}
+              >
+                {shortTitle(p.title)}
               </button>
               <span className="muted">更新于 {formatTime(p.updatedAt)}</span>
               <button onClick={() => void removeProject(p)}>删除</button>
@@ -174,7 +186,9 @@ interface Stats {
   sessions: number;
 }
 
-function ProjectWorkspace({ project, onBack }: { project: Project; onBack: () => void }) {
+function ProjectWorkspace({ project: initial, onBack }: { project: Project; onBack: () => void }) {
+  // v4：「📦 资产」面板会回写选用列表，工作台持有可刷新的 project 副本（单一所有者仍在本组件）
+  const [project, setProject] = useState<Project>(initial);
   const [stats, setStats] = useState<Stats | null>(null);
   const [error, setError] = useState<string | null>(null);
   // v3.1-②：工作现场记忆（上次页签）；复盘投递优先落 ST 试跑
@@ -205,7 +219,9 @@ function ProjectWorkspace({ project, onBack }: { project: Project; onBack: () =>
         setExportMsg("作品不存在（可能已被删除）。");
         return;
       }
-      // 剧场剧组与试跑会话同在 sessions 表（projectId 已隔离），随包整体导出
+      // 剧场剧组与试跑会话同在 sessions 表（projectId 已隔离），随包整体导出。
+      // v4：characters/loreEntries 取的是**可见集**（自有 ∪ 选用）——包里带的是"本作品用到的全部资产"，
+      // 其中可能混有主场在他作品的共享资产（ST 通用格式，导入酒馆无差别）。
       const rooms = sessions.filter((s) => s.kind === "theater");
       const bytes = bundleZipBytes({
         project: proj,
@@ -233,12 +249,14 @@ function ProjectWorkspace({ project, onBack }: { project: Project; onBack: () =>
 
   const refreshStats = useCallback(async () => {
     try {
-      const [characters, loreEntries, nodes, sessions] = await Promise.all([
+      const [proj, characters, loreEntries, nodes, sessions] = await Promise.all([
+        repos.getProject(project.id),
         repos.listCharacters(project.id),
         repos.listLoreEntries(project.id),
         repos.listNodes(project.id),
         repos.listSessions(project.id),
       ]);
+      if (proj) setProject(proj); // 资产选用面板可能已改库：以库为准
       setStats({
         characters: characters.length,
         loreEntries: loreEntries.length,
@@ -256,7 +274,7 @@ function ProjectWorkspace({ project, onBack }: { project: Project; onBack: () =>
   }, [refreshStats]);
 
   const removeProject = async () => {
-    if (!window.confirm(`删除作品《${project.title}》及其全部数据（大纲/人物/世界书/会话/台账/RP 剧场中挂在本作品下的全部剧组与剧组正典）？此操作不可恢复。`)) return;
+    if (!window.confirm(`删除作品《${shortTitle(project.title)}》及其大纲/会话/台账/RP 剧场中挂在本作品下的全部剧组与剧组正典？\n注意：人物卡与世界书是全局资产库，**不会**随作品删除（其它作品选用的照旧可用）。此操作不可恢复。`)) return;
     try {
       await repos.deleteProjectCascade(project.id);
       onBack();
@@ -269,9 +287,11 @@ function ProjectWorkspace({ project, onBack }: { project: Project; onBack: () =>
 
   return (
     <div>
-      <div className="panel row">
+      <div className="panel row" style={{ flexWrap: "wrap" }}>
         <button onClick={onBack}>← 返回</button>
-        <strong>{project.title}</strong>
+        <strong style={{ minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", maxWidth: "40%" }} title={project.title}>
+          {shortTitle(project.title)}
+        </strong>
         <span className="muted">更新于 {formatTime(project.updatedAt)}</span>
         <button onClick={() => void removeProject()}>删除作品</button>
       </div>
@@ -280,11 +300,11 @@ function ProjectWorkspace({ project, onBack }: { project: Project; onBack: () =>
 
       <div className="grid2">
         <div className="panel">
-          <span className="muted">人物</span>
+          <span className="muted">人物卡（可用）</span>
           <div>{num(stats?.characters)}</div>
         </div>
         <div className="panel">
-          <span className="muted">世界书词条</span>
+          <span className="muted">世界书词条（可用）</span>
           <div>{num(stats?.loreEntries)}</div>
         </div>
         <div className="panel">
@@ -320,8 +340,7 @@ function ProjectWorkspace({ project, onBack }: { project: Project; onBack: () =>
       {wsTab === "interview" && <InterviewPage projectId={project.id} />}
       {wsTab === "outline" && <OutlinePage projectId={project.id} />}
       {wsTab === "trial" && <TrialPage projectId={project.id} />}
-      {wsTab === "cast" && <CastPage projectId={project.id} />}
-      {wsTab === "lore" && <LorePage projectId={project.id} />}
+      {wsTab === "assets" && <ProjectAssetsPanel project={project} onProjectChanged={() => void refreshStats()} />}
     </div>
   );
 }

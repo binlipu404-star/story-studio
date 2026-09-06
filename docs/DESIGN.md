@@ -1,6 +1,6 @@
 # Story Studio — 设计说明与自我剖析（审阅版）
 
-> 版本锚点：git HEAD ≥ `f360e9b`（v3.2 轮：构思档案要素固定注入剧场 + 访谈辅助选材）。src 共 48 个 ts/tsx 文件、约 1.5 万行；逻辑测试基线 **740 断言 / 21 个测试文件**（v3.2 新增 24 条）。此前 718→716 的唯一减少来自删除死函数 `rpSystemPrompt` 附带的 2 条其专属断言，属删死代码的合理收缩，非覆盖退化。
+> 版本锚点：git HEAD ≥ `4557e25` 之后的 v4 轮（人物卡/世界书升级为顶层全局资产库 + 规模化 UI 加固）。src 共 50 个 ts/tsx 文件、约 1.5 万行；逻辑测试基线 **756 断言 / 22 个测试文件**（v4 新增 16 条 flow/library.ts 可见集断言）。此前 718→716 的唯一减少来自删除死函数 `rpSystemPrompt` 附带的 2 条其专属断言，属删死代码的合理收缩，非覆盖退化。
 > **术语对照**：产品把剧场的长期 RP 单元称为**「剧组」**（旧称「房间」，UI/文档已全量更名）。代码标识符与持久化键**保留 room 词根不动**（`activeRoom`/`queueRoomWrite`/`RPSession.kind:"theater"`/`ledger.roomId`/`prefs.lastRoomId` 等——改持久键需数据迁移，收益低风险高，明确不做）。读到「剧组」↔`room*` 并存即是此决策，不是遗漏。派生动词随隐喻走：开房→**开机**、整房重来→**整组重来**。
 > 本文档面向接手审阅的 AI/工程师。所有陈述均以仓库代码为准，标注了文件与行级线索；第 12 节是自认缺陷清单，请优先审阅该节。
 > 配套文件：`docs/ROADMAP.md`（里程碑史）、`README.md`（入口）、仓库根 `验收清单.md`（人工验收步骤，含 v3.1 手测清单）。
@@ -68,10 +68,10 @@ core/         types.ts 共享契约 + jobBus.ts 任务总线
 
 | 表 | 索引 | 说明 |
 |---|---|---|
-| projects | id, updatedAt | 作品；StoryBible 内嵌（体量小、整体版本化方便） |
+| projects | id, updatedAt | 作品；StoryBible 内嵌（体量小、整体版本化方便）；v4 增可选 castIds/loreIds（全局资产选用列表） |
 | outlineNodes | id, projectId, [projectId+parentId], [projectId+level] | 大纲树 |
-| characters | id, projectId | 角色（含 ST 卡原文 rawCard） |
-| loreEntries | id, projectId, [projectId+uid] | 世界书词条（ST 语义整型 uid） |
+| characters | id, projectId | 角色（含 ST 卡原文 rawCard）；**v4 起为全局资产库**，projectId=主场作品（''=全局直建），仅溯源用 |
+| loreEntries | id, projectId, [projectId+uid] | 世界书词条（ST 语义整型 uid）；**v4 起为全局资产库**，语义同 characters；uid 改为全库一条序列取号（复合索引退役但保留，零迁移） |
 | sessions | id, projectId, kind | RP 会话/剧场剧组（kind="theater" 过滤） |
 | ledger | id, projectId, [projectId+status], roomId | 台账（roomId 稀疏索引：作品级行无此键） |
 | personas | id, updatedAt | 用户画像（全局跨作品，v2 增） |
@@ -86,11 +86,11 @@ core/         types.ts 共享契约 + jobBus.ts 任务总线
 
 ### 3.2 核心实体速览（`core/types.ts`，325 行，逐字段有注释）
 
-- **Project**：title/synopsis/bible/lorebook。（曾有 `schema` 版本占位字段，因无任何读写方已于 94832dc 删除，见 §12.2。）
+- **Project**：title/synopsis/bible/lorebook + **v4 可选 castIds/loreIds**（从全局资产库选用的外部 id 列表；缺失 ⇔ 旧数据 = 只用自有资产）。删除选用列表不删资产本体；资产被删时门面同事务从各作品选用列表摘除引用。（曾有 `schema` 版本占位字段，因无任何读写方已于 94832dc 删除，见 §12.2。）
 - **StoryBible**：`BibleField[]`（key 稳定键 + group 分组 + status: empty|rough|confirmed|**stale** + deps 依赖键）+ `BibleRevision[]`（修订前全量快照）。stale 传播逻辑在 `flow/interview.ts:mergeBibleUpdates`——上游字段变更时把 deps 引用它的字段标 stale，这是访谈页"哪里过期了"红点的来源。
 - **OutlineNode**：四级 level（volume/chapter/scene/beat）、order 排序、intent 叙事目的、beats、cast、foreshadows（setup/payoffIn/status）、status 五态（idea→draft→refined→tested→locked，`flow/outline.ts:canTransition` 定义合法迁移）、revision 计数。
-- **Character**：profile 五件套 + greeting/mesExample + `rawCard` 原样保留（**roundtrip 无损原则**：导入的 ST 卡导出时应一致）。曾有 `state`（台账动态状态摘要）与 `nick`（{{char}} 昵称）两字段，因无生产者/消费者已于 94832dc 删除，见 §12.2。
-- **LoreEntry**：完整 ST 语义映射（keys/secondaryKeys/constant/selective/caseSensitive/matchWholeWord/position/order/depth/sticky/group/scoring 等，见 types L111-138）。
+- **Character**：profile 五件套 + greeting/mesExample + `rawCard` 原样保留（**roundtrip 无损原则**：导入的 ST 卡导出时应一致）。v4 起 `projectId` 语义 =「主场作品」（溯源；全局页直建的卡为 `''`），可见性由 `Project.castIds` 决定（§8.9）。（曾有 `state`（台账动态状态摘要）与 `nick`（{{char}} 昵称）两字段，因无生产者/消费者已于 94832dc 删除，见 §12.2。）
+- **LoreEntry**：完整 ST 语义映射（keys/secondaryKeys/constant/selective/caseSensitive/matchWholeWord/position/order/depth/sticky/group/scoring 等，见 types L111-138）。v4 起同 Character：全局资产 + 主场语义（§8.9）。
 - **RPSession = "剧组"**（§7.2 细说）：基础字段（cast/userName/messages/rollingSummary/status）+ v3 剧组字段（kind/name/pace/scopeMode/sandbox/script/progress/config 快照）+ v3.1 增 `messagesArchive`（折叠留底）与 `RPMessage.reasoning/notes`。
 - **LedgerRecord**：五类 type（event/item/relation/foreshadow/worldstate）+ actors（**名字字符串，无外键**）+ provenance{sessionId,msgId} 溯源 + roomId 绑定。
 - **Persona**：全局画像，isDefault 全局至多一条（`repos.setDefaultPersona` 保证）。
@@ -223,7 +223,7 @@ File System Access API 目录句柄存 Dexie meta（刷新后重连需用户手�
 
 ---
 
-## 8. 作品管线（Interview → Outline → Cast/Lore → Trial → Recap）
+## 8. 作品管线（Interview → Outline → Trial → Recap；人物卡/世界书 v4 起是全局库，§8.9）
 
 ### 8.1 访谈（InterviewPage + flow/interview.ts）
 
@@ -261,11 +261,21 @@ AI 开放式访谈边谈边长草稿：`interviewSystemPrompt` 要求模型输�
 
 模块级长任务注册表（startJob/abortJob/useJobs 订阅），JobMonitor 挂 App 根——切页签不消失。批量 AI 任务（细纲填充等）带进度/中止。这是 agentrun 之外的第二个"生命周期脱离组件"模式，两者动机相同实现各自独立（可合并的技术债，§12）。
 
+### 8.9 v4 全局资产库（人物卡/世界书——本轮最大改动）
+
+**菜单结构**：顶层七页 = 作品 / 🎭 RP 剧场 / 👤 人物卡 / 📚 世界书 / 画像 / 设置 / 调试台。人物卡与世界书从作品工作区页签升为与剧场同级的**全局资产库页**（`CastPage`/`LorePage` 不再接受 projectId prop）；作品工作区对应位置换成「📦 资产」面板（`components/ProjectAssetsPanel.tsx`：选用勾选 + 世界书参数——参数本就是作品级 `Project.lorebook`，从旧世界书页迁入）。
+
+**数据模型（零迁移，schema 仍 v4）**：`Character/LoreEntry.projectId` 语义降为「主场作品」（溯源用；全局页直建 = `''`）；`Project.castIds?/loreIds?` 可选 = 外部选用列表，**缺失 ⇔ 旧数据 = 只用自有**。可见集公式：**可见 = 自有（projectId 命中）∪ 选用（id 命中列表）**，纯逻辑在 `flow/library.ts:filterVisible`（只过滤不重排——行序仍归 repos 门面，前缀缓存字节稳定性契约不破）。所有作品侧消费方（大纲出场人物/试跑主演/访谈选材/剧场装配与自动开机）读入口都是 `repos.listCharacters/listLoreEntries`，门面单点换血自动生效。
+
+**引用完整性**：`removeCharacter/removeLoreEntry(s)` 同事务从**所有** Project 选用列表摘除引用；`deleteProjectCascade` **不再删两资产表**（全局资产不随作品消亡），读侧对悬空 id 一律 `?? / find` 容忍。`nextUid` 改全库取号（全表扫最大值；≤数千量级可接受，已注释）。批量启用/禁用、删除整本等全局页操作作用在**当前过滤视图**上，按钮带条数，视图=全库时 confirm 里明说。
+
+**剧场隔离不破**：`assembleRoom` 仍只吃调用方传入的 characters/loreEntries（=该作品可见集），不感知全局库本身——v3 的装配隔离哲学原样保留，只是"调用方 gather 的来源"变了。
+
 ---
 
 ## 9. 工程惯例（审阅时请按这些约定判卷）
 
-1. **严格门**：`typecheck`（strict + noUnusedLocals + isolatedModules）→ `test:logic`（build:logic + run-tests，**基线 716 只增不减**）→ `build` → git 提交。每步全绿才许提交，commit message 里带测试数（编年史可查 368→413→…→718→716；718→716 是唯一一次经论证的死代码收缩，见版本锚点）。
+1. **严格门**：`typecheck`（strict + noUnusedLocals + isolatedModules）→ `test:logic`（build:logic + run-tests，**基线 756 只增不减**）→ `build` → git 提交。每步全绿才许提交，commit message 里带测试数（编年史可查 368→413→…→740→756；718→716 是唯一一次经论证的死代码收缩，见版本锚点）。
 2. **测试微框架**：`scripts/tests/*.test.mjs` 默认导出 `async (t)`，t={ok,eq,skip}；从 `dist-test/` import 编译产物——测的是真实运行代码而非源码副本。无第三方测试库。
 3. **防御式解析**是家法：`parsePrefs/parseHandoff/loadAppConfig/sanitizeDigest/extractJson/parseCardJsonText` 全部"永不抛错，坏数据逐字段回落默认/返回 null"。评审时看到空 catch + 注释是风格而非疏忽（均有注释说明为何可忽略）。
 4. **注释风格**：每文件头部块注释讲"为什么+踩过的坑"（useDefineForClassFields 覆表、IndexedDB 复合键 null、vite EBUSY——vite.config `watch.ignored` 即第三坑的疤痕）。
@@ -289,6 +299,7 @@ AI 开放式访谈边谈边长草稿：`interviewSystemPrompt` 要求模型输�
 - matcher 每轮全史重放 sticky/cooldown 状态机（O(历史长×词条数)）——百楼级无感，千楼未压测。
 - 剧组 messages 整数组随行读写：几百楼 + reasoning 后单行可 >1MB，Dexie 结构化克隆可承受但 autosave 600ms 去抖是必要的。
 - estimateTokens 与真实端点分词误差 ±20~40%，预算条仅供预览。
+- **v4 全局库规模化**：repos 可见集/全局列表都改 `toArray()` 全表扫后内存过滤（词条数千级 <10ms，可接受；换来的是语义单点收敛）。UI 侧按 100+ 卡 / 500+ 词条审计加固过：列表行 memo（编辑击键不重渲全表）、名称/徽标 ellipsis 三件套、`select{max-width:100%}` 与 `.grid2 minmax(0,1fr)`（防原生 select 长 option 与长内容撑破 232px 剧场左栏/grid 列）、confirm 长名截 20 字、全局页搜索过滤 + 批量操作限当前视图、勾选列表 Set 查找 + 收起不渲染。长列表性能仍属"未压测"档——万级词条需虚拟化，见 §12.17。
 
 ---
 
@@ -315,8 +326,9 @@ AI 开放式访谈边谈边长草稿：`interviewSystemPrompt` 要求模型输�
 
 **结构性债**
 14. 页面巨型化：OutlinePage 1497 / TheaterPage 1105 / TrialPage 944 行；无 ErrorBoundary（任何渲染期异常白屏整页）；无路由（深链不可能）；无组件抽象纪律（内联样式复制粘贴——94832dc 已把跨页**非 UI** 纯工具收敛到 `core/uiUtils.ts`，内联样式与 Badge 仍按纪律留在页内）。
-15. **React 层零自动化测试**：716 断言全部覆盖非 UI 逻辑；§7.5 的九条写安全不变量里 6-9 条只靠人工验收（`验收清单.md`）。Dexie 层同样无常规测试（仅一次性 fake-indexeddb probe）。
+15. **React 层零自动化测试**：756 断言全部覆盖非 UI 逻辑；§7.5 的九条写安全不变量里 6-9 条只靠人工验收（`验收清单.md`）。Dexie 层同样无常规测试（仅一次性 fake-indexeddb probe）。
 16. 双"生命周期脱离组件"实现（jobBus 与 agentrun）结构相似未收敛；prefs/progress/handoff 三个 localStorage 壳也各自发明了一次 storage() 探测——可提炼但未提炼（有意识：三处校验语义不同，合并收益低于风险）。
+17. **v4 全局库的已知边界**：`listAll*`/可见集全表扫（万级需索引或虚拟化）；`nextUid` 全表扫取号；选用列表读侧悬空容忍但**作品改名/删卡不级联改** OutlineNode.cast 与 RPSession.cast 里的 id（读侧同样容错，语义=历史引用允许悬空）；全局页批量删除按"当前过滤视图"作用——过滤后全选删除与全库删除在按钮文案上区分，但纪律仍是用户自查。项目包导出打包的是**可见集**（含共享自他作品的资产）——ST 通用格式无差别，但"从包里重建全局库"的回灌器尚不存在。
 
 ---
 
@@ -324,7 +336,7 @@ AI 开放式访谈边谈边长草稿：`interviewSystemPrompt` 要求模型输�
 
 ```bash
 npm run typecheck      # 期望 exit 0
-npm run test:logic     # 期望 total=716 failed=0（若你新增测试，只许 >716）
+npm run test:logic     # 期望 total=756 failed=0（若你新增测试，只许 >756）
 npm run build          # tsc --noEmit && vite build
 npm run test:fixtures  # 用 docs/fixtures 下真实 ST 样本跑解析器
 git log --oneline      # 21 个提交 = 完整编年史（45ef4ab → 94832dc）
@@ -336,15 +348,15 @@ git log --oneline      # 21 个提交 = 完整编年史（45ef4ab → 94832dc）
 
 ---
 
-## 附录 A：文件职责一览（src，48 文件）
+## 附录 A：文件职责一览（src，50 文件）
 
 - **core/**：`types.ts` 域契约 · `jobBus.ts` 长任务总线 · `uiUtils.ts` 跨页非 UI 小工具（errMsg/isAbort/下载/剪贴板/时间）
-- **store/**：`db.ts` Dexie v4 · `repos.ts` 41 函数门面 · `templates.ts` Bible 字段种子
+- **store/**：`db.ts` Dexie v4 · `repos.ts` 门面（v4 增 listAll*/select*/removeLoreEntries 等全局库函数） · `templates.ts` Bible 字段种子
 - **ai/**：`client.ts` SSE/chat/chatJSON/chatTools/ToolsUnsupportedError · `config.ts` 双端点配置 · `prompts.ts` 中文模板全集 · `json.ts` 容错抽取 · `tokenizer.ts` 估算
 - **st/**：`card.ts` 卡解析/导出/PNG · `lorebook.ts` 世界书规范化 · `matcher.ts` 触发引擎 · `chatlog.ts` ST jsonl · `persona.ts` 画像导入
-- **flow/**：`rp.ts` RP 引擎 · `theater.ts` 剧组装配 · `script.ts` 副本/推进 · `agent.ts` 工具白名单/执行器 · `agentrun.ts` run 注册表 · `snapshot.ts` 台账快照 · `interview.ts` Bible 合并 · `outline.ts` 树逻辑/复盘 · `outlinebook.ts` 剧情世界书 · `trialpack.ts` 试跑包 · `zip.ts`/`bundle.ts` 打包 · `chatlog` 见 st · `handoff.ts` 投递箱 · `nav.ts` 页签总线 · `prefs.ts` 偏好 · `progress.ts` 进度 · `fsauto.ts` 本地写盘
-- **pages/**：Projects / Interview / Outline / Cast / Lore / Trial / Personas / Theater / Playground(调试台)
-- **components/**：`RpRunner` 聊天机 · `RoomLedgerPanel` 台账裁决 · `JobMonitor` · `SettingsPanel`
+- **flow/**：`rp.ts` RP 引擎 · `theater.ts` 剧组装配 · `script.ts` 副本/推进 · `agent.ts` 工具白名单/执行器 · `agentrun.ts` run 注册表 · `snapshot.ts` 台账快照 · `interview.ts` Bible 合并 · `outline.ts` 树逻辑/复盘 · `outlinebook.ts` 剧情世界书 · `trialpack.ts` 试跑包 · `zip.ts`/`bundle.ts` 打包 · `library.ts` v4 可见集纯逻辑 · `handoff.ts` 投递箱 · `nav.ts` 页签总线 · `prefs.ts` 偏好 · `progress.ts` 进度 · `fsauto.ts` 本地写盘
+- **pages/**：Projects / Interview / Outline / Trial / Personas / Theater / Playground(调试台) / **Cast（v4 全局卡库页）** / **Lore（v4 全局词条库页）**
+- **components/**：`RpRunner` 聊天机 · `RoomLedgerPanel` 台账裁决 · `JobMonitor` · `SettingsPanel` · **`ProjectAssetsPanel`（v4 作品侧选用面板：勾选 + 世界书参数）**
 
 ## 附录 B：交互习惯速写（写码者画像）
 

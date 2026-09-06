@@ -22,16 +22,18 @@ body { margin: 0; background: var(--bg); color: var(--text); }
 }
 .tab:hover { background: var(--bg); }
 .tab.active { background: var(--bg); border-color: var(--line); font-weight: 600; }
-.content { flex: 1; padding: 20px; max-width: 1200px; width: 100%; margin: 0 auto; }
+.content { flex: 1; padding: 20px; padding-bottom: 64px; max-width: 1200px; width: 100%; margin: 0 auto; } /* 底部 64px：给右下常驻 JobMonitor（fixed）预留底带，长列表页底行操作不被遮 */
 .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 16px; margin-bottom: 14px; }
 button.primary { background: var(--accent); color: #fff; border: none; padding: 8px 16px; border-radius: 8px; cursor: pointer; font-size: 14px; }
 button.primary:disabled { opacity: 0.5; cursor: not-allowed; }
 input, textarea, select {
   border: 1px solid var(--line); border-radius: 6px; padding: 6px 8px;
   font-size: 14px; background: #fff; color: var(--text); font-family: inherit;
+  max-width: 100%; /* 规模化审计：原生 select 按最宽 option 撑宽，会溢出定宽栏（剧场左栏 232px） */
+  min-width: 0;
 }
 textarea { resize: vertical; }
 .muted { color: var(--muted); font-size: 13px; }
 .row { display: flex; gap: 8px; align-items: center; }
-.grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 8px 16px; }
+.grid2 { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 8px 16px; } /* minmax(0,..)：防长内容把 grid 列撑破 */
 label.field { display: flex; flex-direction: column; gap: 4px; font-size: 13px; color: var(--muted); }

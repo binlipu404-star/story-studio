@@ -5,7 +5,7 @@
 
 export const GO_TAB_EVENT = "ss:go-tab";
 
-export type TopTab = "projects" | "personas" | "settings" | "play" | "theater";
+export type TopTab = "projects" | "theater" | "cast" | "lore" | "personas" | "settings" | "play";
 
 export function goTab(tab: TopTab): void {
   try {
