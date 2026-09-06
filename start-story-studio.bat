@@ -4,13 +4,12 @@ setlocal
 rem ============================================================
 rem  Story Studio one-click launcher
 rem  First run: install deps -> start dev server -> open browser.
-rem  Copy to Desktop is OK (absolute APP_DIR below; edit if you move the project).
+rem  The project root is the folder this .bat lives in (copy the whole folder together).
 rem ============================================================
 
-set "APP_DIR=D:\deepseek harness\station(dsh)\story-studio"
-if not exist "%APP_DIR%\package.json" set "APP_DIR=%~dp0"
+set "APP_DIR=%~dp0"
 if not exist "%APP_DIR%\package.json" (
-  echo [ERROR] story-studio project not found. Edit APP_DIR at the top of this file.
+  echo [ERROR] story-studio project not found next to this .bat. Keep this file inside the project root.
   pause
   exit /b 1
 )

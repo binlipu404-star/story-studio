@@ -9,7 +9,8 @@ import { masterToNodes, treeToMarkdown, applyRecapToNode, reweaveBeats, sceneSeq
 import { buildTrialPack } from "../../dist-test/flow/trialpack.js";
 import { sessionRecapPrompt, masterOutlinePrompt } from "../../dist-test/ai/prompts.js";
 
-const PNG = "D:\\deepseek harness\\station(dsh)\\素材\\main_morgana-she-summoned-you-a95cfc0121e1_spec_v2.png";
+// 同 st-card.test.mjs：环境变量 SS_TEST_PNG 或仓库内 docs/fixtures/morgana-spec-v2.png，缺失即回退内嵌卡
+const PNG = process.env.SS_TEST_PNG ?? "docs/fixtures/morgana-spec-v2.png";
 
 let seq = 0;
 const uid = () => `u${++seq}`;

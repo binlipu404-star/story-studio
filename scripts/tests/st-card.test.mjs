@@ -16,8 +16,9 @@ import {
   parsedCardToCharacter,
 } from "../../dist-test/st/card.js";
 
-const PNG_PATH =
-  "D:\\deepseek harness\\station(dsh)\\素材\\main_morgana-she-summoned-you-a95cfc0121e1_spec_v2.png";
+// 真实 PNG 卡（本地素材，不入库）：优先环境变量 SS_TEST_PNG，缺省找仓库内
+// docs/fixtures/morgana-spec-v2.png；都不存在时下方用例自动 skip。
+const PNG_PATH = process.env.SS_TEST_PNG ?? "docs/fixtures/morgana-spec-v2.png";
 
 // ---------- fixtures ----------
 

@@ -1,6 +1,6 @@
 # Story Studio — 设计说明与自我剖析（审阅版）
 
-> 版本锚点：git HEAD ≥ `4557e25` 之后的 v4 轮（人物卡/世界书升级为顶层全局资产库 + 规模化 UI 加固）。src 共 50 个 ts/tsx 文件、约 1.5 万行；逻辑测试基线 **756 断言 / 22 个测试文件**（v4 新增 16 条 flow/library.ts 可见集断言）。此前 718→716 的唯一减少来自删除死函数 `rpSystemPrompt` 附带的 2 条其专属断言，属删死代码的合理收缩，非覆盖退化。
+> 版本锚点：git HEAD ≥ `4557e25` 之后的 v4 轮（人物卡/世界书升级为顶层全局资产库 + 规模化 UI 加固，随后 GitHub 公开部署）。src 共 50 个 ts/tsx 文件、约 1.5 万行；逻辑测试基线 **756 断言 / 22 个测试文件**（v4 新增 16 条 flow/library.ts 可见集断言；真实 PNG 卡不入库，未设 `SS_TEST_PNG` 时 5 条 PNG 断言转为 2 条 skip，即 CI 上 total=751 skipped=2 failed=0）。此前 718→716 的唯一减少来自删除死函数 `rpSystemPrompt` 附带的 2 条其专属断言，属删死代码的合理收缩，非覆盖退化。
 > **术语对照**：产品把剧场的长期 RP 单元称为**「剧组」**（旧称「房间」，UI/文档已全量更名）。代码标识符与持久化键**保留 room 词根不动**（`activeRoom`/`queueRoomWrite`/`RPSession.kind:"theater"`/`ledger.roomId`/`prefs.lastRoomId` 等——改持久键需数据迁移，收益低风险高，明确不做）。读到「剧组」↔`room*` 并存即是此决策，不是遗漏。派生动词随隐喻走：开房→**开机**、整房重来→**整组重来**。
 > 本文档面向接手审阅的 AI/工程师。所有陈述均以仓库代码为准，标注了文件与行级线索；第 12 节是自认缺陷清单，请优先审阅该节。
 > 配套文件：`docs/ROADMAP.md`（里程碑史）、`README.md`（入口）、仓库根 `验收清单.md`（人工验收步骤，含 v3.1 手测清单）。
@@ -336,7 +336,7 @@ AI 开放式访谈边谈边长草稿：`interviewSystemPrompt` 要求模型输�
 
 ```bash
 npm run typecheck      # 期望 exit 0
-npm run test:logic     # 期望 total=756 failed=0（若你新增测试，只许 >756）
+npm run test:logic     # 本机（设 SS_TEST_PNG 指向真实 PNG 卡）期望 total=756 failed=0；CI 无卡时 total=751 skipped=2 failed=0。若你新增测试，只许 >756
 npm run build          # tsc --noEmit && vite build
 npm run test:fixtures  # 用 docs/fixtures 下真实 ST 样本跑解析器
 git log --oneline      # 21 个提交 = 完整编年史（45ef4ab → 94832dc）
