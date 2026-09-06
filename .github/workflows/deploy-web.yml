@@ -1,0 +1,48 @@
+# GitHub Pages 部署：push 到 main 即自动构建 dist/ 并发布。
+# 站点地址：仓库 Settings → Pages 显示（https://<user>.github.io/<repo>/）。
+# 注意：本项目是纯前端（数据在各人浏览器 IndexedDB，AI 端点/密钥在页面「设置」里自配），
+# 流水线里不需要任何密钥。
+name: Deploy Web
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci
+      # 部署前跑门禁：typecheck + 逻辑测试全绿才发布（build 脚本本身含 tsc）
+      - run: npm run typecheck
+      - run: npm run test:logic
+      - run: npm run build
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: dist
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

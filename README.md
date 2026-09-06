@@ -27,6 +27,13 @@ npm run test:logic # 纯逻辑冒烟测试（改过 src/st、src/flow、ai/json�
 npm run build      # 生产构建（tsc + vite build）
 ```
 
+## 部署（GitHub Pages）
+
+纯前端应用：数据在各人浏览器的 IndexedDB 里，AI 端点与密钥在页面「设置」里自配，**服务端零依赖、流水线不需要密钥**。
+`.github/workflows/deploy-web.yml` 在 push 到 main 时跑 typecheck + 逻辑测试 + build，全绿才把 `dist/` 发到 Pages
+（仓库 Settings → Pages 查看地址，形如 `https://<user>.github.io/<repo>/`）。`vite.config.ts` 的 `base: "./"` 用相对
+资源路径，换仓库名/挂子路径都无需改配置。
+
 ## 目录速览
 
 ```
