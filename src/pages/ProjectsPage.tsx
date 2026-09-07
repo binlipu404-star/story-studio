@@ -249,14 +249,16 @@ function ProjectWorkspace({ project: initial, onBack }: { project: Project; onBa
 
   const refreshStats = useCallback(async () => {
     try {
-      const [proj, characters, loreEntries, nodes, sessions] = await Promise.all([
-        repos.getProject(project.id),
+      // 先回读并落位 project（资产面板勾选态的唯一视觉来源）——它不该被后面的统计聚合拖住：
+      // 统计里任何一个读函数抛错（或耗时）都不能让勾选框"点了没反应"。
+      const proj = await repos.getProject(project.id);
+      if (proj) setProject(proj); // 资产选用面板可能已改库：以库为准
+      const [characters, loreEntries, nodes, sessions] = await Promise.all([
         repos.listCharacters(project.id),
         repos.listLoreEntries(project.id),
         repos.listNodes(project.id),
         repos.listSessions(project.id),
       ]);
-      if (proj) setProject(proj); // 资产选用面板可能已改库：以库为准
       setStats({
         characters: characters.length,
         loreEntries: loreEntries.length,
