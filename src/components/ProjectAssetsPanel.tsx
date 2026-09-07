@@ -1,13 +1,14 @@
 // ============================================================
-// story-studio — 作品侧「📦 资产」面板（v4）
+// story-studio — 作品侧「📦 资产」面板（v5）
 // 人物卡/世界书是全局库（顶层菜单维护）；本面板是**作品级选用**视图：
-//   - 自有资产（projectId=本作品）恒可见、勾选框禁用（取消须去全局库改主场/删除）；
-//   - 外部资产逐条勾选 → repos.selectCharacter/selectLoreEntry 写 Project.castIds/loreIds；
-//   - 规模化：搜索过滤 + Set 查找 + memo 行 + 滚动容器限高（500+ 词条可用）；
+//   - 自有资产（projectId=本作品的人物卡）恒可见、勾选框禁用（取消须去全局库改主场/删除）；
+//   - 人物卡逐张勾选 → repos.selectCharacter 写 Project.castIds；
+//   - v5：世界书按**整本**勾选 → repos.selectLoreBook 写 Project.loreBookIds（多本按勾选顺序拼接注入）；
+//   - 规模化：搜索过滤 + Set 查找 + memo 行 + 滚动容器限高（500+ 可用）；
 //   - 世界书参数（Project.lorebook，作品级）从旧世界书页迁移至此编辑。
 // ============================================================
 import { memo, useCallback, useEffect, useMemo, useState } from "react";
-import type { Character, LoreEntry, LorebookSettings, Project } from "../core/types";
+import type { Character, LoreBook, LoreEntry, LorebookSettings, Project } from "../core/types";
 import * as repos from "../store/repos";
 import { errMsg } from "../core/uiUtils";
 
@@ -111,6 +112,7 @@ function PickColumn(p: {
 
 export function ProjectAssetsPanel({ project, onProjectChanged }: { project: Project; onProjectChanged: (p: Project) => void }) {
   const [allChars, setAllChars] = useState<Character[]>([]);
+  const [allBooks, setAllBooks] = useState<LoreBook[]>([]);
   const [allLore, setAllLore] = useState<LoreEntry[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [msg, setMsg] = useState<string | null>(null);
@@ -133,9 +135,14 @@ export function ProjectAssetsPanel({ project, onProjectChanged }: { project: Pro
     let dead = false;
     void (async () => {
       try {
-        const [chars, lore] = await Promise.all([repos.listAllCharacters(), repos.listAllLoreEntries()]);
+        const [chars, books, lore] = await Promise.all([
+          repos.listAllCharacters(),
+          repos.listLoreBooks(),
+          repos.listAllLoreEntries(),
+        ]);
         if (!dead) {
           setAllChars(chars);
+          setAllBooks(books);
           setAllLore(lore);
           setError(null);
         }
@@ -157,18 +164,31 @@ export function ProjectAssetsPanel({ project, onProjectChanged }: { project: Pro
       })),
     [allChars, project.id],
   );
-  const loreRows = useMemo(
-    () =>
-      allLore.map((e) => ({
-        id: e.id,
-        label: shortLabel(e.comment || `词条 #${e.uid}`, 40),
-        own: e.projectId === project.id,
-        badge: e.keys.length > 0 ? shortLabel(e.keys.join(","), 24) : undefined,
-      })),
-    [allLore, project.id],
-  );
+  // v5：世界书按「整本」选用。行 = 书；badge 显示 该书共 N 条 / 启用 M 条。
+  const loreRows = useMemo(() => {
+    const byBook = new Map<string, { total: number; enabled: number }>();
+    for (const e of allLore) {
+      const b = e.bookId ? byBook.get(e.bookId) : undefined;
+      if (!e.bookId) continue;
+      if (!b) byBook.set(e.bookId, { total: 1, enabled: e.enabled ? 1 : 0 });
+      else {
+        b.total += 1;
+        if (e.enabled) b.enabled += 1;
+      }
+    }
+    return allBooks.map((bk) => {
+      const stat = byBook.get(bk.id) ?? { total: 0, enabled: 0 };
+      return {
+        id: bk.id,
+        label: shortLabel(bk.name, 40),
+        own: false, // 书是全局资产，恒属全局库；作品只做选用
+        badge: `${stat.total} 条 / 启用 ${stat.enabled}`,
+      };
+    });
+  }, [allBooks, allLore]);
   const castSet = useMemo(() => new Set(project.castIds ?? []), [project.castIds]);
-  const loreSet = useMemo(() => new Set(project.loreIds ?? []), [project.loreIds]);
+  // v5：选用集合 = 书 id 列表
+  const loreSet = useMemo(() => new Set(project.loreBookIds ?? []), [project.loreBookIds]);
 
   const reloadProject = useCallback(async () => {
     // 选用门面写库后回读校准（不动本地 project state 的所有者语义，单一事实源在 ProjectsPage）
@@ -194,9 +214,9 @@ export function ProjectAssetsPanel({ project, onProjectChanged }: { project: Pro
     (id: string, on: boolean) => {
       void (async () => {
         try {
-          await repos.selectLoreEntry(project.id, id, on);
+          await repos.selectLoreBook(project.id, id, on);
           await reloadProject();
-          setMsg(on ? "已选用该词条" : "已取消选用（全局库里的词条本身不会被删）");
+          setMsg(on ? "已选用该世界书" : "已取消选用（全局库里的书本身不会被删）");
         } catch (e) {
           setError(errMsg(e));
         }
@@ -263,8 +283,8 @@ export function ProjectAssetsPanel({ project, onProjectChanged }: { project: Pro
 
       <section className="panel">
         <p className="muted" style={{ marginTop: 0 }}>
-          人物卡与世界书在顶层「👤 人物卡 / 📚 世界书」全局库里维护；这里勾选本作品**选用**哪些外部资产。
-          自有资产（本作品创建的）恒可用，无需勾选。
+          人物卡与世界书在顶层「👤 人物卡 / 📚 世界书」全局库里维护；这里选择本作品**选用**哪些。
+          世界书按**整本**选用（多本按勾选顺序注入），人物卡逐张选用。自有资产恒可用，无需勾选。
         </p>
         {error && <p style={{ color: "#c62828", fontSize: 13 }}>{error}</p>}
         {msg && <p className="muted">{msg}</p>}
@@ -277,8 +297,8 @@ export function ProjectAssetsPanel({ project, onProjectChanged }: { project: Pro
             onToggle={onCastToggle}
           />
           <PickColumn
-            title="📚 世界书词条"
-            empty="全局词条库为空：去顶层「世界书」页新建或导入"
+            title="📚 世界书（整本选用）"
+            empty="全局书库为空：去顶层「世界书」页导入一本世界书"
             rows={loreRows}
             selectedSet={loreSet}
             onToggle={onLoreToggle}

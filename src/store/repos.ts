@@ -8,19 +8,23 @@
 // ============================================================
 import { db } from "./db";
 import { DEFAULT_BIBLE_FIELDS, DEFAULT_LOREBOOK_SETTINGS } from "./templates";
-import { filterVisible } from "../flow/library";
+import { assignLegacyBook, filterVisible, keepBooksEnabled, legacySelection, visibleByBooks } from "../flow/library";
+import { toLoreEntries } from "../st/lorebook"; // 纯逻辑层（解析/装配），无 IO，允许门面复用
 import type {
   Character,
   CharacterProfile,
   ID,
   LedgerRecord,
   LedgerStatus,
+  LoreBook,
   LoreEntry,
+  LorebookSettings,
   OutlineLevel,
   OutlineNode,
   OutlineStatus,
   Persona,
   Project,
+  RawLorebook,
   RPSession,
 } from "../core/types";
 
@@ -356,10 +360,22 @@ export async function listAllLoreEntries(): Promise<LoreEntry[]> {
   return sortLore(await db.loreEntries.toArray());
 }
 
-/** 作品可见词条 = 自有 ∪ 选用（loreIds）。悬空 id 自动忽略。 */
+/**
+ * 作品可见词条（v5 书制）：bookIds 存在 → 按选中书序拼接（**整本停用书的词条整体剔除**：
+ * 总开关 book.enabled ∧ 词条级 enabled）；未迁移（缺 loreBookIds）→ 回落 v4 自有 ∪ loreIds。
+ */
 export async function listLoreEntries(projectId: ID): Promise<LoreEntry[]> {
-  const [rows, project] = await Promise.all([db.loreEntries.toArray(), db.projects.get(projectId)]);
-  return filterVisible(sortLore(rows), projectId, project?.loreIds);
+  const [rows, project, books] = await Promise.all([
+    db.loreEntries.toArray(),
+    db.projects.get(projectId),
+    listLoreBooks(),
+  ]);
+  const sorted = sortLore(rows);
+  if (project?.loreBookIds !== undefined) {
+    const enabledBookIds = new Set(books.filter((b) => b.enabled).map((b) => b.id));
+    return visibleByBooks(keepBooksEnabled(sorted, enabledBookIds), projectId, project.loreBookIds);
+  }
+  return filterVisible(sorted, projectId, project?.loreIds);
 }
 
 /** 选用/取消选用一条全局词条。 */
@@ -393,6 +409,154 @@ export async function removeLoreEntries(ids: ID[]): Promise<void> {
       }
     }
   });
+}
+
+// ============================================================
+// v5 世界书「整本书」管理
+// 书本体存 db.meta（key=`lorebook:<id>`，value=LoreBook）；词条仍在 loreEntries 表（LoreEntry.bookId 归属）。
+// 整本启用/停用 => book.enabled 与词条级 enabled 做与；整本删除 => 书 + 其全部词条 + 各作品选用摘除。
+// ============================================================
+
+export const LOREBOOK_META_PREFIX = "lorebook:";
+
+function lorebookMetaKey(bookId: ID): string {
+  return `${LOREBOOK_META_PREFIX}${bookId}`;
+}
+
+/** 全部世界书（meta 键前缀扫，按 createdAt 升序 = 导入先后）。 */
+export async function listLoreBooks(): Promise<LoreBook[]> {
+  const rows = await db.meta.where("key").startsWith(LOREBOOK_META_PREFIX).toArray();
+  return (rows.map((r) => r.value as LoreBook) as LoreBook[]).sort((a, b) => a.createdAt - b.createdAt);
+}
+
+export async function getLoreBook(bookId: ID): Promise<LoreBook | undefined> {
+  return metaGet<LoreBook>(lorebookMetaKey(bookId));
+}
+
+/** 空书：仅元数据（供手工新建/导入前占位）。 */
+export async function addLoreBook(partial: {
+  name?: string;
+  desc?: string;
+  settings?: LorebookSettings;
+}): Promise<LoreBook> {
+  const now = Date.now();
+  const book: LoreBook = {
+    id: uid(),
+    name: partial.name || "未命名世界书",
+    desc: partial.desc,
+    enabled: true,
+    settings: partial.settings ?? { ...DEFAULT_LOREBOOK_SETTINGS },
+    createdAt: now,
+    updatedAt: now,
+  };
+  await db.meta.put({ key: lorebookMetaKey(book.id), value: book });
+  return book;
+}
+
+export async function updateLoreBook(bookId: ID, patch: Partial<Pick<LoreBook, "name" | "desc" | "enabled" | "settings">>): Promise<LoreBook | undefined> {
+  const cur = await getLoreBook(bookId);
+  if (!cur) return undefined;
+  const next: LoreBook = { ...cur, ...patch, updatedAt: Date.now() };
+  await db.meta.put({ key: lorebookMetaKey(bookId), value: next });
+  return next;
+}
+
+/** 整本启用/停用总开关。 */
+export async function setLoreBookEnabled(bookId: ID, on: boolean): Promise<void> {
+  await updateLoreBook(bookId, { enabled: on });
+}
+
+/**
+ * 导入一整本世界书：建书（书名/扫描参数入库）→ 词条重编号（忽略文件自带 uid，全库 nextUid 起号防撞）
+ * → 复用 st/lorebook.toLoreEntries 的全字段默认值逻辑 → 每条打上书 id 落库。
+ */
+export async function importLoreBook(raw: RawLorebook): Promise<LoreBook> {
+  return db.transaction("rw", [db.loreEntries, db.meta], async () => {
+    const settings: LorebookSettings = {
+      scanDepth: raw.scanDepth ?? DEFAULT_LOREBOOK_SETTINGS.scanDepth,
+      tokenBudget: raw.tokenBudget ?? DEFAULT_LOREBOOK_SETTINGS.tokenBudget,
+      recursiveScanning: raw.recursiveScanning ?? DEFAULT_LOREBOOK_SETTINGS.recursiveScanning,
+    };
+    const book = await addLoreBook({ name: raw.name, settings });
+    const start = await nextUid();
+    // 忽略文件自带 uid：统一从全库 nextUid 起号（uid 全局唯一 ⇒ id 也唯一）
+    const renumbered: RawLorebook = { ...raw, entries: raw.entries.map((en) => ({ ...en, uid: undefined })) };
+    // order 规整为书内 0..n-1：保持文件原序，避免文件自带 order 与邻居书值域交织（书内上/下移不污染别书）
+    const rows = toLoreEntries(renumbered, "", start)
+      .map((r, i) => ({ ...r, bookId: book.id, order: i }));
+    if (rows.length > 0) await db.loreEntries.bulkAdd(rows);
+    return book;
+  });
+}
+
+/** 删除整本书：书元数据 + 其全部词条 + 从所有作品的 loreBookIds 摘除引用（同事务）。 */
+export async function deleteLoreBook(bookId: ID): Promise<void> {
+  await db.transaction("rw", [db.meta, db.loreEntries, db.projects], async () => {
+    await db.meta.delete(lorebookMetaKey(bookId));
+    const victims = (await db.loreEntries.toArray()).filter((e) => e.bookId === bookId).map((e) => e.id);
+    if (victims.length > 0) await db.loreEntries.bulkDelete(victims);
+    for (const p of await db.projects.toArray()) {
+      if (p.loreBookIds?.includes(bookId)) {
+        await db.projects.update(p.id, { loreBookIds: p.loreBookIds.filter((x) => x !== bookId) });
+      }
+    }
+  });
+}
+
+/** 选用/取消选用一本世界书（作品侧；多本按勾选先后排序）。 */
+export async function selectLoreBook(projectId: ID, bookId: ID, on: boolean): Promise<void> {
+  const p = await db.projects.get(projectId);
+  if (!p) return;
+  const cur = p.loreBookIds ?? [];
+  const next = on ? (cur.includes(bookId) ? cur : [...cur, bookId]) : cur.filter((x) => x !== bookId);
+  await db.projects.update(projectId, { loreBookIds: next, updatedAt: Date.now() });
+}
+
+export const LEGACY_BOOK_ID = "legacy-book";
+export const LEGACY_BOOK_NAME = "旧版词条";
+
+/**
+ * 旧数据迁移 shim（幂等，安全可反复执行）：
+ *   - 若有 bookId 缺失的散装词条 → 把它们全部归入「旧版词条」一书（书不存在则先建）；
+ *   - 对「在旧书里有自有词条 或 v4 选过词条」的作品，把旧版书自动放进 loreBookIds 开头。
+ * 迁移后所有词条都有书归属，v4 的「自有 ∪ 选用」可见语义原样保住。
+ */
+export async function ensureLegacyBookMigration(): Promise<{ merged: number; projectsUpdated: number }> {
+  const rows = await db.loreEntries.toArray();
+  if (!rows.some((e) => e.bookId === undefined)) return { merged: 0, projectsUpdated: 0 };
+
+  return db.transaction("rw", [db.loreEntries, db.meta, db.projects], async () => {
+    let legacy = await getLoreBook(LEGACY_BOOK_ID);
+    if (!legacy) {
+      legacy = await addLoreBook({ name: LEGACY_BOOK_NAME });
+      // 固定 id：保证重复调用幂等、且迁移后键名稳定
+      await db.meta.delete(lorebookMetaKey(legacy.id));
+      legacy = { ...legacy, id: LEGACY_BOOK_ID };
+      await db.meta.put({ key: lorebookMetaKey(LEGACY_BOOK_ID), value: legacy });
+    }
+    const { entries: migrated, merged } = assignLegacyBook(rows, LEGACY_BOOK_ID);
+    if (merged.length > 0) await db.loreEntries.bulkPut(migrated as LoreEntry[]);
+    // 逐作品判定「旧书里是否有自有词条」（不能用全局标志：否则无关作品会看见整本旧书）
+    const ownLegacy = new Set(
+      rows.filter((e) => e.bookId === undefined && e.projectId !== "").map((e) => e.projectId),
+    );
+    let projectsUpdated = 0;
+    for (const p of await db.projects.toArray()) {
+      if (p.loreBookIds !== undefined) continue; // 已迁移过，跳过
+      const next = legacySelection(p, ownLegacy.has(p.id), LEGACY_BOOK_ID);
+      if (next.length > 0 || p.loreBookIds === undefined) {
+        await db.projects.update(p.id, { loreBookIds: next, updatedAt: Date.now() });
+        projectsUpdated++;
+      }
+    }
+    return { merged: merged.length, projectsUpdated };
+  });
+}
+
+/** 某本书的全部词条（书中顺序：order 升序、tie uid）。 */
+export async function listEntriesByBook(bookId: ID): Promise<LoreEntry[]> {
+  const rows = (await db.loreEntries.toArray()).filter((e) => e.bookId === bookId);
+  return sortLore(rows);
 }
 
 // ============================================================

@@ -7,8 +7,8 @@
 // - 规模化：行抽成 memo 组件（编辑草稿只重渲编辑行），名称 ellipsis 三件套防溢出。
 // - 导入角色卡：多选 .png/.json → importCardBytes → parsedCardToCharacter → repos.addCharacter
 //   （主场=全局 ''）；逐文件容错（红行列文件名+原因，至多展示 10 条）。
-//   勾选「随卡导入世界书」（默认开）时，卡内 character_book 以 repos.nextUid 为起点
-//   重新起号后落全局词条库（主场 ''，忽略卡内自带 uid/id，防撞主键）。
+//   勾选「随卡导入世界书」（默认开）时，卡内 character_book 以「一整本世界书」落全局书库
+//   （v5：bookId 归属一本书，书名为《卡名》内嵌世界书；词条重新起号防撞）。
 // - 导出卡：exportCardV2（rawCard roundtrip 由 st/card 负责）→ Blob 下载 `${name}.json`。
 // - 新建：repos.addCharacter('', …) 建全局空白卡 → 自动展开编辑并聚焦姓名（pendingFocusName）。
 // - 删除：confirm 名称截断 20 字 + 提示被 N 个作品选用（全局删除会同时从各作品选用列表摘除）。
@@ -25,9 +25,7 @@ import {
 } from "react";
 import type { Character, Project, RawLorebook } from "../core/types";
 import { exportCardV2, importCardBytes, parsedCardToCharacter } from "../st/card";
-import { toLoreEntries } from "../st/lorebook";
 import * as repos from "../store/repos";
-import { db } from "../store/db";
 import { downloadJson, errMsg } from "../core/uiUtils";
 import { loadProgress, saveProgress } from "../flow/progress";
 
@@ -423,16 +421,12 @@ export function CastPage() {
   removeRef.current = onRemove;
   const onRemoveStable = useCallback((c: Character) => void removeRef.current(c), []);
 
-  /** 卡内嵌书落全局词条库（主场 ''）：统一从 nextUid 起号（忽略卡内自带 uid/id），返回新增条数 */
-  const addEmbeddedBook = async (book: RawLorebook): Promise<number> => {
-    const start = await repos.nextUid();
-    const renumbered: RawLorebook = {
-      ...book,
-      entries: book.entries.map((e) => ({ ...e, uid: undefined })),
-    };
-    const rows = toLoreEntries(renumbered, "", start);
-    if (rows.length > 0) await db.loreEntries.bulkAdd(rows);
-    return rows.length;
+  /** 卡内嵌书 → 以「一整本世界书」落全局书库（v5）：书名取卡名，词条重编号打上书 id；返回新增条数。 */
+  const addEmbeddedBook = async (book: RawLorebook, cardName: string): Promise<number> => {
+    const bookName = book.name?.trim() || `《${cardName}》内嵌世界书`;
+    const imported = await repos.importLoreBook({ ...book, name: bookName });
+    const count = (await repos.listEntriesByBook(imported.id)).length;
+    return count;
   };
 
   const onImportFiles = async (e: ChangeEvent<HTMLInputElement>) => {
@@ -461,7 +455,7 @@ export function CastPage() {
         });
         const book = parsed.embeddedBook;
         if (withBook && book && book.entries.length > 0) {
-          loreAdded += await addEmbeddedBook(book);
+          loreAdded += await addEmbeddedBook(book, ch.name);
           booksWith += 1;
         }
         ok += 1;

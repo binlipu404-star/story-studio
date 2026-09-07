@@ -1,6 +1,6 @@
 # Story Studio — 设计说明与自我剖析（审阅版）
 
-> 版本锚点：git HEAD ≥ `ec490f5` 之后的 v4 轮（人物卡/世界书升级为顶层全局资产库 + 规模化 UI 加固，随后 GitHub 公开部署）。src 共 50 个 ts/tsx 文件、约 1.5 万行；逻辑测试基线 **756 断言 / 22 个测试文件**（v4 新增 16 条 flow/library.ts 可见集断言；真实 PNG 卡不入库，未设 `SS_TEST_PNG` 时 5 条 PNG 断言转为 2 条 skip，即 CI 上 total=751 skipped=2 failed=0）。此前 718→716 的唯一减少来自删除死函数 `rpSystemPrompt` 附带的 2 条其专属断言，属删死代码的合理收缩，非覆盖退化。
+> 版本锚点：git HEAD ≥ `ec490f5` 之后的 v4 轮（人物卡/世界书升级为顶层全局资产库 + 规模化 UI 加固，随后 GitHub 公开部署）→ v5 轮（世界书整本书化，schema 零迁移）。src 共 50 个 ts/tsx 文件、约 1.5 万行；逻辑测试基线 **787 断言 / 23 个测试文件**（v4 新增 16 条 flow/library.ts 可见集断言；v5 新增 31 条书制断言 scripts/tests/library-book.test.mjs；真实 PNG 卡不入库，未设 `SS_TEST_PNG` 时 5 条 PNG 断言转为 2 条 skip，即 CI 上 total=782 skipped=2 failed=0）。此前 718→716 的唯一减少来自删除死函数 `rpSystemPrompt` 附带的 2 条其专属断言，属删死代码的合理收缩，非覆盖退化。
 > **术语对照**：产品把剧场的长期 RP 单元称为**「剧组」**（旧称「房间」，UI/文档已全量更名）。代码标识符与持久化键**保留 room 词根不动**（`activeRoom`/`queueRoomWrite`/`RPSession.kind:"theater"`/`ledger.roomId`/`prefs.lastRoomId` 等——改持久键需数据迁移，收益低风险高，明确不做）。读到「剧组」↔`room*` 并存即是此决策，不是遗漏。派生动词随隐喻走：开房→**开机**、整房重来→**整组重来**。
 > 本文档面向接手审阅的 AI/工程师。所有陈述均以仓库代码为准，标注了文件与行级线索；第 12 节是自认缺陷清单，请优先审阅该节。
 > 配套文件：`docs/ROADMAP.md`（里程碑史）、`README.md`（入口）、仓库根 `验收清单.md`（人工验收步骤，含 v3.1 手测清单）。
@@ -68,29 +68,30 @@ core/         types.ts 共享契约 + jobBus.ts 任务总线
 
 | 表 | 索引 | 说明 |
 |---|---|---|
-| projects | id, updatedAt | 作品；StoryBible 内嵌（体量小、整体版本化方便）；v4 增可选 castIds/loreIds（全局资产选用列表） |
+| projects | id, updatedAt | 作品；StoryBible 内嵌（体量小、整体版本化方便）；v4 增可选 castIds/loreIds（全局资产选用列表）；**v5 增可选 loreBookIds（整本选用，loreIds 退役只读）** |
 | outlineNodes | id, projectId, [projectId+parentId], [projectId+level] | 大纲树 |
 | characters | id, projectId | 角色（含 ST 卡原文 rawCard）；**v4 起为全局资产库**，projectId=主场作品（''=全局直建），仅溯源用 |
-| loreEntries | id, projectId, [projectId+uid] | 世界书词条（ST 语义整型 uid）；**v4 起为全局资产库**，语义同 characters；uid 改为全库一条序列取号（复合索引退役但保留，零迁移） |
+| loreEntries | id, projectId, [projectId+uid] | 世界书词条（ST 语义整型 uid）；**v4 起为全局资产库**；**v5 起带可选 bookId（未索引，全表过滤——书制归属）**，uid 全库一条序列（复合索引退役但保留，零迁移） |
 | sessions | id, projectId, kind | RP 会话/剧场剧组（kind="theater" 过滤） |
 | ledger | id, projectId, [projectId+status], roomId | 台账（roomId 稀疏索引：作品级行无此键） |
 | personas | id, updatedAt | 用户画像（全局跨作品，v2 增） |
-| meta | key | 元数据（v4 增：FSA 目录句柄等，句柄作纯 value 不建索引） |
+| meta | key | 元数据（v4 增：FSA 目录句柄 + **v5 世界书本体** `lorebook:<id>`→LoreBook，句柄/书作纯 value 不建索引） |
 
 必须知道的 IndexedDB 语义坑（已写进源码注释）：
 
 - 表字段用 `declare` 而非 `x!: Table<...>`：`useDefineForClassFields:true` 会把未初始化 `!` 字段编译成 `defineProperty(x, undefined)`，**覆掉 Dexie 构造期装好的表属性**。
 - 复合键不接受 `null`：根节点（parentId=null）不入 `[projectId+parentId]` 索引，取根走 `[projectId+level]="volume"`（`repos.childrenOf` 由此实现）。
 
-版本演进：v1 六表 → v2 personas → v3 sessions.kind + ledger.roomId（剧场独立化）→ v4 meta。**所有新增字段一律可选，无迁移代码**——旧数据缺字段即"未启用"语义，这是有意的向下兼容策略。
+版本演进：v1 六表 → v2 personas → v3 sessions.kind + ledger.roomId（剧场独立化）→ v4 meta。**所有新增字段一律可选，无迁移代码**——旧数据缺字段即"未启用"语义，这是有意的向下兼容策略。**v5 连 schema 版本都没涨**：书制所需的 `LoreEntry.bookId` 走未索引可选字段（读侧全表过滤，量级 ≤ 数千可接受）、`LoreBook` 本体存既有 meta 表——见 §8.10。
 
 ### 3.2 核心实体速览（`core/types.ts`，325 行，逐字段有注释）
 
-- **Project**：title/synopsis/bible/lorebook + **v4 可选 castIds/loreIds**（从全局资产库选用的外部 id 列表；缺失 ⇔ 旧数据 = 只用自有资产）。删除选用列表不删资产本体；资产被删时门面同事务从各作品选用列表摘除引用。（曾有 `schema` 版本占位字段，因无任何读写方已于 b56beb2 删除，见 §12.2。）
+- **Project**：title/synopsis/bible/lorebook + **v4 可选 castIds/loreIds**（从全局资产库选用的外部 id 列表；缺失 ⇔ 旧数据 = 只用自有资产）+ **v5 可选 loreBookIds**（按整本选用世界书，有序：注入按此顺序拼接）。删除选用列表不删资产本体；资产被删时门面同事务从各作品选用列表摘除引用。（曾有 `schema` 版本占位字段，因无任何读写方已于 b56beb2 删除，见 §12.2。）
 - **StoryBible**：`BibleField[]`（key 稳定键 + group 分组 + status: empty|rough|confirmed|**stale** + deps 依赖键）+ `BibleRevision[]`（修订前全量快照）。stale 传播逻辑在 `flow/interview.ts:mergeBibleUpdates`——上游字段变更时把 deps 引用它的字段标 stale，这是访谈页"哪里过期了"红点的来源。
 - **OutlineNode**：四级 level（volume/chapter/scene/beat）、order 排序、intent 叙事目的、beats、cast、foreshadows（setup/payoffIn/status）、status 五态（idea→draft→refined→tested→locked，`flow/outline.ts:canTransition` 定义合法迁移）、revision 计数。
 - **Character**：profile 五件套 + greeting/mesExample + `rawCard` 原样保留（**roundtrip 无损原则**：导入的 ST 卡导出时应一致）。v4 起 `projectId` 语义 =「主场作品」（溯源；全局页直建的卡为 `''`），可见性由 `Project.castIds` 决定（§8.9）。（曾有 `state`（台账动态状态摘要）与 `nick`（{{char}} 昵称）两字段，因无生产者/消费者已于 b56beb2 删除，见 §12.2。）
-- **LoreEntry**：完整 ST 语义映射（keys/secondaryKeys/constant/selective/caseSensitive/matchWholeWord/position/order/depth/sticky/group/scoring 等，见 types L111-138）。v4 起同 Character：全局资产 + 主场语义（§8.9）。
+- **LoreEntry**：完整 ST 语义映射（keys/secondaryKeys/constant/selective/caseSensitive/matchWholeWord/position/order/depth/sticky/group/scoring 等）。v4 起同 Character：全局资产 + 主场语义（§8.9）；**v5 增可选 `bookId`**（所属世界书，未索引）——注意 `group` 是 ST 的"同组仅留一条"匹配分组，与"某本世界书"无关。
+- **LoreBook**（v5 新增，types.ts）：`{id, name, desc?, enabled, settings, createdAt, updatedAt}`。一本书 = 可整体导入/选用/导出/删除的单元；本体存 `db.meta` 键 `lorebook:<id>`，词条仍是 loreEntries 表的独立行（书内逐条编辑保留）。
 - **RPSession = "剧组"**（§7.2 细说）：基础字段（cast/userName/messages/rollingSummary/status）+ v3 剧组字段（kind/name/pace/scopeMode/sandbox/script/progress/config 快照）+ v3.1 增 `messagesArchive`（折叠留底）与 `RPMessage.reasoning/notes`。
 - **LedgerRecord**：五类 type（event/item/relation/foreshadow/worldstate）+ actors（**名字字符串，无外键**）+ provenance{sessionId,msgId} 溯源 + roomId 绑定。
 - **Persona**：全局画像，isDefault 全局至多一条（`repos.setDefaultPersona` 保证）。
@@ -271,11 +272,31 @@ AI 开放式访谈边谈边长草稿：`interviewSystemPrompt` 要求模型输�
 
 **剧场隔离不破**：`assembleRoom` 仍只吃调用方传入的 characters/loreEntries（=该作品可见集），不感知全局库本身——v3 的装配隔离哲学原样保留，只是"调用方 gather 的来源"变了。
 
+### 8.10 v5 世界书整本书化（本轮最大改动）
+
+**动机（用户原话）**：世界书管理策略太零碎——导入要按「一整本书」处理，不拆散成小条目；使用时只选「哪本书」，不逐条挑词条。三项已确认设计决定：① 旧散装词条自动归成一本「旧版词条」书；② 书内保留逐条编辑 + 整本启用/停用总开关；③ 一个作品可选多本（按所选书序拼接全部启用词条注入）。
+
+**数据模型（schema 零迁移，版本仍 v4）**：
+- `LoreBook` 本体存 `db.meta`（key=`lorebook:<id>`，value=LoreBook）——meta 表本就是"纯 value 不建索引"的通用壳（v4 装 FSA 句柄的先例）。
+- `LoreEntry.bookId?` 可选、**不建索引**（避免 version(5)）：书→词条走全表 `toArray().filter`，与 `nextUid` 全表扫描同量级（≤数千，既定可接受）。
+- `Project.loreBookIds?: ID[]` 有序 = 按整本选用；`loreIds` 退役（不再写入，仅作旧数据迁移输入）。
+- **导入 = 建书**：`repos.importLoreBook(RawLorebook)` 一事务内建书（书名/scan_depth/token_budget/recursive 入库）→ uid 从全库 nextUid 重编号防撞 → order 规整为书内 0..n-1（避免文件自带 order 与邻居书值域交织）→ bulkAdd。`st/lorebook.toLoreEntries` 签名未动（书级元数据过去被丢弃，现在被 importLoreBook 消费）。
+
+**可见集（`flow/library.ts` 纯函数段，`scripts/tests/library-book.test.mjs` 锁语义）**：`visibleByBooks(entries, projectId, bookIds)`——bookIds 已定义 → **按选中书序**逐书拼接（书内保持 repos 的 order/uid 稳定序，前缀缓存字节稳定契约不破）；bookIds 未定义（未迁移兜底）→ 回落 v4 自有语义。作品侧消费方（剧场/访谈/试跑/打包）读入口仍是 `repos.listLoreEntries(projectId)`——门面单点换血，rp/matcher/assembleRoom **零改动**。
+
+**旧数据 shim `repos.ensureLegacyBookMigration()`**（幂等）：存在 bookId 缺失词条 → 建/复用固定 id=`legacy-book` 的「旧版词条」书 → `assignLegacyBook` 打书 id → 逐作品算 `legacySelection`（v4 选过词条 **或** 旧书里有自有词条 → 旧版书自动放选用开头；其余给空数组钉住"已迁移"）。**已知取舍**：旧散装词条不分来源合并为一本，所以"曾选过任一旧词条"或"有自有旧词条"的作品迁移后见到整本旧书（可见集只增不减——旧可见集 ⊆ 新可见集）；不这么做的替代方案（逐作品一本旧书）会制造 N 本伪书，与"整本书"心智冲突。LorePage 首开调用；失败不阻断，工具条有手动补救按钮。
+
+**UI**：`LorePage` 从"词条大列表"改为**书卡列表**——书头（名称/条数/启用数/被 N 作品选用/书参数徽标/整本开关/改名/导出 ST 书/导出卡内嵌/删除整本），展开 = 书内视图（过滤 + 逐条编辑 LoreRow + 视图内批量 + 新增词条进本书）。`ProjectAssetsPanel` 📚 列从逐条勾选换成**整本勾选**（badge=条数/启用数）。`CastPage` 随卡导入书 = 建《卡名》内嵌世界书一本。**导入文件名消毒**（`fileSafe` 替换 `\/:*?"<>|`）。
+
+**两级开关（AND 语义）**：整本开关 `LoreBook.enabled` 与词条级 `LoreEntry.enabled` 是正交的两层——`repos.listLoreEntries` 先按「启用书集合」`keepBooksEnabled` 整体剔除停用书的词条，再按书序 `visibleByBooks` 拼接；matcher 再按词条级 enabled 跳过。**停一本书 = 它的所有词条对全部作品的注入立即消失**，不必逐条停用、也不必解勾。全局库页调试台的池 = 启用书的全部词条（书内停用词条由 matcher 自行跳过）。作品侧解勾（loreBookIds 移除）是"这本书与本作品无关"，与全局总开关语义不同、互不覆盖。
+
+**测试**：`library-book.test.mjs` 覆盖 entriesOfBook 保序/悬空、entriesOfBooks 书序拼接、visibleByBooks 兜底尾巴与未迁移回落、assignLegacyBook 幂等、legacySelection 四种来源、keepBooksEnabled 剔除与不改入参、AND 组合；基线 756（含 PNG）/751（无 PNG 2 skip）→ **787/782**。
+
 ---
 
 ## 9. 工程惯例（审阅时请按这些约定判卷）
 
-1. **严格门**：`typecheck`（strict + noUnusedLocals + isolatedModules）→ `test:logic`（build:logic + run-tests，**基线 756 只增不减**）→ `build` → git 提交。每步全绿才许提交，commit message 里带测试数（编年史可查 368→413→…→740→756；718→716 是唯一一次经论证的死代码收缩，见版本锚点）。
+1. **严格门**：`typecheck`（strict + noUnusedLocals + isolatedModules）→ `test:logic`（build:logic + run-tests，**基线 787 只增不减**）→ `build` → git 提交。每步全绿才许提交，commit message 里带测试数（编年史可查 368→413→…→740→756→787；718→716 是唯一一次经论证的死代码收缩，见版本锚点）。
 2. **测试微框架**：`scripts/tests/*.test.mjs` 默认导出 `async (t)`，t={ok,eq,skip}；从 `dist-test/` import 编译产物——测的是真实运行代码而非源码副本。无第三方测试库。
 3. **防御式解析**是家法：`parsePrefs/parseHandoff/loadAppConfig/sanitizeDigest/extractJson/parseCardJsonText` 全部"永不抛错，坏数据逐字段回落默认/返回 null"。评审时看到空 catch + 注释是风格而非疏忽（均有注释说明为何可忽略）。
 4. **注释风格**：每文件头部块注释讲"为什么+踩过的坑"（useDefineForClassFields 覆表、IndexedDB 复合键 null、vite EBUSY——vite.config `watch.ignored` 即第三坑的疤痕）。
@@ -326,7 +347,7 @@ AI 开放式访谈边谈边长草稿：`interviewSystemPrompt` 要求模型输�
 
 **结构性债**
 14. 页面巨型化：OutlinePage 1497 / TheaterPage 1105 / TrialPage 944 行；无 ErrorBoundary（任何渲染期异常白屏整页）；无路由（深链不可能）；无组件抽象纪律（内联样式复制粘贴——b56beb2 已把跨页**非 UI** 纯工具收敛到 `core/uiUtils.ts`，内联样式与 Badge 仍按纪律留在页内）。
-15. **React 层零自动化测试**：756 断言全部覆盖非 UI 逻辑；§7.5 的九条写安全不变量里 6-9 条只靠人工验收（`验收清单.md`）。Dexie 层同样无常规测试（仅一次性 fake-indexeddb probe）。
+15. **React 层零自动化测试**：787 断言全部覆盖非 UI 逻辑；§7.5 的九条写安全不变量里 6-9 条只靠人工验收（`验收清单.md`）。Dexie 层同样无常规测试（仅一次性 fake-indexeddb probe）。
 16. 双"生命周期脱离组件"实现（jobBus 与 agentrun）结构相似未收敛；prefs/progress/handoff 三个 localStorage 壳也各自发明了一次 storage() 探测——可提炼但未提炼（有意识：三处校验语义不同，合并收益低于风险）。
 17. **v4 全局库的已知边界**：`listAll*`/可见集全表扫（万级需索引或虚拟化）；`nextUid` 全表扫取号；选用列表读侧悬空容忍但**作品改名/删卡不级联改** OutlineNode.cast 与 RPSession.cast 里的 id（读侧同样容错，语义=历史引用允许悬空）；全局页批量删除按"当前过滤视图"作用——过滤后全选删除与全库删除在按钮文案上区分，但纪律仍是用户自查。项目包导出打包的是**可见集**（含共享自他作品的资产）——ST 通用格式无差别，但"从包里重建全局库"的回灌器尚不存在。
 
@@ -336,7 +357,7 @@ AI 开放式访谈边谈边长草稿：`interviewSystemPrompt` 要求模型输�
 
 ```bash
 npm run typecheck      # 期望 exit 0
-npm run test:logic     # 本机（设 SS_TEST_PNG 指向真实 PNG 卡）期望 total=756 failed=0；CI 无卡时 total=751 skipped=2 failed=0。若你新增测试，只许 >756
+npm run test:logic     # 本机（设 SS_TEST_PNG 指向真实 PNG 卡）期望 total=787 failed=0；CI 无卡时 total=782 skipped=2 failed=0。若你新增测试，只许 >787
 npm run build          # tsc --noEmit && vite build
 npm run test:fixtures  # 用 docs/fixtures 下真实 ST 样本跑解析器
 git log --oneline      # 完整编年史（a186ee4 → b56beb2 → 至今；提交者为 GitHub noreply 邮箱）

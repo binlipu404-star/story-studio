@@ -19,7 +19,9 @@ export interface Project {
   // v4 全局资产库：人物卡/世界书是全局数据，作品侧只持「选用列表」。
   // 可选字段（零迁移）：缺失 ⇔ 旧数据，语义 = 只用自有资产（projectId 命中本作品的行）。
   castIds?: ID[]; // 选用的外部人物卡（Character.id；自有卡不必列，恒可见）
-  loreIds?: ID[]; // 选用的外部世界书词条（LoreEntry.id；同上）
+  loreIds?: ID[]; // v4 选用外部世界书词条（LoreEntry.id）——v5 弃用，仅旧数据读侧兼容，不再写入
+  // v5 世界书「整本书」：作品侧改为按「书」选用（多本，有序）。
+  loreBookIds?: ID[]; // 选用的世界书（LoreBook.id，有序——按此顺序拼接各书启用词条注入）
   createdAt: number;
   updatedAt: number;
 }
@@ -114,7 +116,8 @@ export interface Character {
 // ---------- 世界书（内部规范化形态）----------
 export interface LoreEntry {
   id: ID;
-  projectId: ID; // 主场作品（v4 起仅溯源用：'' = 全局建词条）；可见性由 Project.loreIds 选用列表决定
+  projectId: ID; // 主场作品（v4 起仅溯源用：'' = 全局建词条）；v5 起可见性由所属书决定
+  bookId?: ID; // v5：所属世界书（LoreBook.id）；缺失 ⇔ 旧散装词条（首开时归入「旧版词条」书）
   uid: number; // ST 语义里的整型 id
   comment: string; // 词条名/备注
   content: string;
@@ -144,6 +147,19 @@ export interface LorebookSettings {
   scanDepth: number; // 扫描最近多少条消息
   tokenBudget: number; // 世界书总预算
   recursiveScanning: boolean;
+}
+
+/** v5 世界书「整本书」管理单元：一本书 = 一个可整体导入/选用/导出/删除的单元。
+ *  书本体存 `db.meta`（key=`lorebook:<id>`，value 即本接口）；词条仍是 loreEntries 表里的独立行，
+ *  靠 LoreEntry.bookId 归属本书。启用/停用整本走 book.enabled，注入侧再与词条级 enabled 做与。 */
+export interface LoreBook {
+  id: ID;
+  name: string;
+  desc?: string;
+  enabled: boolean; // 整本启用/停用总开关
+  settings: LorebookSettings;
+  createdAt: number;
+  updatedAt: number;
 }
 
 // ---------- ST 原始格式（导入中间形态） ----------

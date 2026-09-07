@@ -47,3 +47,95 @@ export function usedSelectedCount(selectedIds: ID[] | undefined, aliveIds: Itera
   const alive = new Set(aliveIds);
   return (selectedIds ?? []).reduce((n, x) => (alive.has(x) ? n + 1 : n), 0);
 }
+
+// ============================================================
+// v5 世界书「整本书」可见集纯逻辑
+// 模型：LoreEntry.bookId 标记归属书；Project.loreBookIds = 按序选用的书。
+// 排序契约同 filterVisible：只过滤不重排——行的稳定次序由 repos 门面提供（bookId 相同行保持
+// 入参数组原有 order/uid 序），跨书拼接顺序由「选中书序」决定，保证输入恒得同一输出（前缀缓存依赖）。
+// ============================================================
+
+/** 取属于某一本书的词条（保持入参数组顺序）。 */
+export function entriesOfBook<T extends { bookId?: ID }>(entries: T[], bookId: ID): T[] {
+  return entries.filter((e) => e.bookId === bookId);
+}
+
+/**
+ * 按「选中书序」拼接各书全部词条（每个 bookId 在 bookIds 里出现的次序 = 拼接次序；
+ * 书内维持入参数组原序）。悬空书 id 自动忽略。
+ */
+export function entriesOfBooks<T extends { bookId?: ID }>(entries: T[], bookIds: ID[] | undefined): T[] {
+  if (!bookIds || bookIds.length === 0) return [];
+  const out: T[] = [];
+  for (const bid of bookIds) {
+    for (const e of entries) {
+      if (e.bookId === bid) out.push(e);
+    }
+  }
+  return out;
+}
+
+/**
+ * 作品可见词条（v5）：
+ *   - bookIds 已定义 → 按「选中书序」拼接各书词条（每本书内维持入参数组原序），
+ *     尾部再补「本作品自有的未归书词条」（迁移收尾前的兜底尾巴）；
+ *   - bookIds 未定义（旧数据、未迁移）→ 回落 v4 语义：返回自有（projectId 命中本作品）的行。
+ * 纯函数只过滤+按选择序拼接，不更动书内相对顺序。
+ */
+export function visibleByBooks<T extends { bookId?: ID; projectId: ID }>(
+  entries: T[],
+  projectId: ID,
+  bookIds: ID[] | undefined,
+): T[] {
+  if (bookIds === undefined) {
+    return entries.filter((e) => e.projectId === projectId);
+  }
+  const out: T[] = [];
+  for (const bid of bookIds) {
+    for (const e of entries) {
+      if (e.bookId === bid) out.push(e);
+    }
+  }
+  // 自有未归书兜底（正常迁移后不存在）
+  for (const e of entries) {
+    if (e.bookId === undefined && e.projectId === projectId) out.push(e);
+  }
+  return out;
+}
+
+/** 整本启用过滤：保留「启用书」的词条 + 未归书词条（迁移兜底）；enabledIds 传 null ⇒ 全保留。 */
+export function keepBooksEnabled<T extends { bookId?: ID }>(entries: T[], enabledIds: Set<ID> | null): T[] {
+  if (enabledIds === null) return [...entries];
+  return entries.filter((e) => e.bookId === undefined || enabledIds.has(e.bookId));
+}
+
+/** 旧散装词条（bookId 缺失）是否还存在——用于「旧版词条」合并的判定与提示。 */
+export function hasUnbookedEntries<T extends { bookId?: ID }>(entries: T[]): boolean {
+  return entries.some((e) => e.bookId === undefined);
+}
+
+/**
+ * 旧数据 shim 的纯逻辑核心：把散装词条（bookId 缺失）全部归入 legacyBookId 一书。
+ * 返回 { entries: 打上书 id 后的全部词条, merged: 本次新归入的书 id 列表（bookId 原本缺失的行） }。
+ * 只做标记不改序；shim 由 repos 落库时调用。
+ */
+export function assignLegacyBook<T extends { bookId?: ID }>(entries: T[], legacyBookId: ID): { entries: T[]; merged: T[] } {
+  const out = entries.map<T>((e) => (e.bookId === undefined ? { ...e, bookId: legacyBookId } : e));
+  return { entries: out, merged: out.filter((e) => e.bookId === legacyBookId) };
+}
+
+/**
+ * 作品应否「自动选中旧版词条书」：旧书迁移后，
+ *   有旧 loreIds（v4 选过词条）或 在旧书里有自有词条 的作品，一律把 legacy 书放进选用开头，
+ *   保住 v4 的「自有 ∪ 选用」可见语义。pure：只算该选哪些书，落库由 repos 做。
+ */
+export function legacySelection(
+  project: { loreIds?: ID[]; loreBookIds?: ID[] },
+  ownInLegacy: boolean,
+  legacyBookId: ID,
+): ID[] {
+  const hadOldSelection = (project.loreIds?.length ?? 0) > 0;
+  if (!hadOldSelection && !ownInLegacy) return project.loreBookIds ?? [];
+  const cur = project.loreBookIds ?? [];
+  return cur.includes(legacyBookId) ? cur : [legacyBookId, ...cur];
+}
