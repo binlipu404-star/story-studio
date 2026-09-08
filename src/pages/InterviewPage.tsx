@@ -20,6 +20,7 @@ import {
 import { chat } from "../ai/client";
 import { extractJson } from "../ai/json";
 import { loadProgress, makeDebouncer, saveProgress } from "../flow/progress";
+import { claimsCompletion } from "../core/claims";
 
 const MSG_LIMIT = 100; // 聊天记录 localStorage 上限
 const REV_LIMIT = 20; // revisions 裁剪上限
@@ -395,8 +396,9 @@ export function InterviewPage({ projectId }: { projectId: string }) {
   };
 
   // ---- 右栏：发送 ----
-  const send = async () => {
-    const text = input.trim();
+  /** textArg：气泡「重发上一条」传入该气泡对应的用户原文；省略=取输入框当前内容 */
+  const send = async (textArg?: string) => {
+    const text = (textArg ?? input).trim();
     if (!text || streaming || !project) return;
     const fieldsNow = project.bible.fields;
     const round = messages.filter((m) => m.role === "assistant").length + 1;
@@ -705,6 +707,19 @@ export function InterviewPage({ projectId }: { projectId: string }) {
             {messages.map((m, i) => {
               const chosenCount = (m.proposals ?? []).filter((p) => p.checked && p.valid).length;
               const isLastStreaming = streaming && i === messages.length - 1;
+              // v6 反「只说不做」：宣称完成 × 无提案 = 空口白话，当场戳穿（历史气泡同样生效）
+              const hasProposals = (m.proposals?.length ?? 0) > 0;
+              const claimed = m.role === "assistant" && !isLastStreaming && claimsCompletion(m.content);
+              const emptyPromise = claimed && !hasProposals;
+              const looksLikeRawJson = m.content.trim().startsWith("{") && m.content.includes('"updates"');
+              // 该气泡对应的用户原文（往前找最近一条 user）——「重发上一条」用
+              let prevUserText = "";
+              for (let j = i - 1; j >= 0; j--) {
+                if (messages[j].role === "user") {
+                  prevUserText = messages[j].content;
+                  break;
+                }
+              }
               return (
                 <div
                   key={i}
@@ -716,10 +731,38 @@ export function InterviewPage({ projectId }: { projectId: string }) {
                 >
                   <div style={m.role === "user" ? userBubble : assistantBubble}>
                     {m.content || (isLastStreaming ? <span className="muted">思考中…</span> : null)}
+                    {emptyPromise && (
+                      <div
+                        style={{
+                          marginTop: 8,
+                          padding: "6px 10px",
+                          borderRadius: 8,
+                          border: "1px solid #d97706",
+                          background: "rgba(217, 119, 6, 0.08)",
+                          fontSize: 13,
+                          color: "#b45309",
+                        }}
+                      >
+                        ⚠ AI 声称完成，但本轮<strong>没有任何字段提案</strong>——档案未发生创作。
+                        <button
+                          style={{ marginLeft: 8, padding: "2px 10px", fontSize: 12 }}
+                          disabled={streaming || !prevUserText}
+                          onClick={() => void send(prevUserText)}
+                        >
+                          重发上一条
+                        </button>
+                      </div>
+                    )}
+                    {claimed && !hasProposals && looksLikeRawJson && (
+                      <div className="muted" style={{ marginTop: 4, fontSize: 12 }}>
+                        （本轮 JSON 解析失败，未形成提案；可点上方「重发上一条」或直接纠正它）
+                      </div>
+                    )}
                     {m.role === "assistant" && m.proposals && m.proposals.length > 0 && (
                       <div style={{ marginTop: 8, borderTop: "1px dashed var(--line)", paddingTop: 8 }}>
                         <div className="row">
                           <strong style={{ fontSize: 13 }}>提案更新（{m.proposals.length} 条）</strong>
+                          <span className="muted" style={{ fontSize: 12 }}>勾选并「采纳」后才真正写入档案</span>
                           {m.adopted && <span className="muted">已采纳落库</span>}
                         </div>
                         {m.proposals.map((p, j) => (
