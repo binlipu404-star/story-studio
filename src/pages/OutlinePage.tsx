@@ -1,9 +1,12 @@
 // ============================================================
-// story-studio M3 — 大纲工作台
-// 左列：工具栏（生成总纲 / 下一幕提案 / 导出 Markdown）+ 大纲树；
-// 右列：节点编辑器（内容 + 状态机 + 删除子树 + AI 共写提案）。
-// 约定：树渲染/层级/状态机全部走 flow/outline 纯函数；
-//       读经 repos 门面；批量插入与手工组节点直用 db 单例（规格指定）。
+// story-studio M3/v6 — 大纲工作台（删繁就简：只剩两个视图）
+// ✍️ 手动编写：左树（⠿ 拖拽柄排序/改父，落点校验走 flow/outline.moveNodePlan）
+//              + 右编辑器（字段/状态机/移动到…/删除子树）
+// 💬 对话创作：整页聊天 + 右侧草稿只读预览树；每轮显示草稿真实变化，
+//              AI 空口宣称完成而草稿无变化 → 黄条戳穿（反「只说不做」红线）。
+// 约定：树渲染/层级/状态机全部走 flow/outline 纯函数；读经 repos 门面；
+//       批量插入直用 db 单例（规格指定）；排序落库走 repos.applyMovePlan
+//       （revision 不动——编辑器 key=id:revision 重挂载契约，防吞未保存草稿）。
 // ============================================================
 import {
   useCallback,
@@ -11,6 +14,7 @@ import {
   useRef,
   useState,
   type CSSProperties,
+  type DragEvent as ReactDragEvent,
   type ReactNode,
 } from "react";
 import type {
@@ -31,30 +35,27 @@ import {
   beatsFromStrings,
   canTransition,
   childrenOf,
+  draftDiff,
   LEVEL_NAMES,
   LEVEL_ORDER,
   lineageOf,
   masterToNodes,
+  moveNodePlan,
   preorder,
   STATUS_NAMES as STATUS_LABELS,
+  subtreeIds,
   treeToMarkdown,
   validatePlacement,
+  type DraftDiff,
+  type DropZone,
   type MasterOutlineJson,
 } from "../flow/outline.js";
 import { chatJSON } from "../ai/client";
-import { abortJob, startJob, useJobs } from "../core/jobBus";
-import {
-  masterOutlinePrompt,
-  nextScenePrompt,
-  nodeDiscussPrompt,
-  outlineCoachPrompt,
-  sceneBeatsPrompt,
-  STRUCTURE_NAMES,
-  type OutlineStructure,
-} from "../ai/prompts";
+import { outlineCoachPrompt, sceneBeatsPrompt } from "../ai/prompts";
 import { draftToBookScenes, outlineBookJson, type OutlineBookScene } from "../flow/outlinebook";
 import { ledgerFacts } from "../flow/snapshot";
 import { loadProgress, makeDebouncer, saveProgress } from "../flow/progress";
+import { claimsCompletion } from "../core/claims";
 
 // ---------- 展示常量 ----------
 
@@ -66,7 +67,6 @@ const LEVEL_ICONS: Record<OutlineLevel, string> = {
 };
 // 状态中文名单一来源：flow/outline.STATUS_NAMES（页面不再复制第二份）
 const ALL_STATUSES: OutlineStatus[] = ["idea", "draft", "refined", "tested", "locked"];
-const STRUCTURES: OutlineStructure[] = ["three-act", "kishotenketsu", "hero"];
 
 // ---------- 内联样式（styles.css 不在本代理可改范围） ----------
 
@@ -117,38 +117,54 @@ function asRecord(v: unknown): Record<string, unknown> | null {
 function asStr(v: unknown): string {
   return typeof v === "string" ? v.trim() : "";
 }
-function asStrArray(v: unknown): string[] {
-  return Array.isArray(v)
-    ? v.map((x) => (typeof x === "string" ? x.trim() : "")).filter(Boolean)
-    : [];
-}
 
 // ---------- 页面本地形态 ----------
 
-/** 「下一幕提案」JSON 的规整形态 */
-interface SceneProposal {
-  title: string;
-  intent: string;
-  location: string;
-  timepoint: string;
-  castNames: string[];
-  beats: string[];
-}
-/** 「AI 共写」提案形态（nodeDiscussPrompt 的 JSON 规整后） */
-interface DiscussProposal {
-  comment: string;
-  title: string;
-  intent: string;
-  beats: string[];
-  foreshadows: { setup: string; payoffIn: string }[];
-}
 /** runAI 的结果包装：区分「AI 失败/被停止」与「合法返回了 null 等假值」 */
 type AiResult<T> = { ok: true; value: T } | { ok: false };
+
+/** 对话创作的一条消息：diff=本轮草稿真实变化；claimed=宣称完成；badDraft=本轮没回有效草稿 */
+interface CoachMsg {
+  role: "user" | "assistant";
+  content: string;
+  diff?: DraftDiff;
+  claimed?: boolean;
+  badDraft?: boolean;
+}
+
+/** 进度桶里的紧凑消息形态（localStorage 截尾存储） */
+interface SavedMsg {
+  role: "user" | "assistant";
+  content: string;
+  d?: [number, number, number];
+  claimed?: boolean;
+  bad?: boolean;
+}
 
 function charactersByNameMap(chars: Character[]): Record<string, string> {
   const m: Record<string, string> = {};
   for (const c of chars) if (c.name) m[c.name] = c.id;
   return m;
+}
+
+/** draftDiff 的三项是否全 0（=本轮界面未发生创作） */
+function isZeroDiff(d: DraftDiff): boolean {
+  return d.volumes === 0 && d.chapters === 0 && d.scenes === 0;
+}
+
+/** 草稿三层计数（预览面板计数行用；flow 的 countDraft 未导出，页面本地数） */
+function countDraft(d: MasterOutlineJson | null): { v: number; c: number; s: number } {
+  let v = 0;
+  let c = 0;
+  let s = 0;
+  for (const vol of Array.isArray(d?.volumes) ? d.volumes : []) {
+    v++;
+    for (const ch of Array.isArray(vol?.chapters) ? vol.chapters : []) {
+      c++;
+      s += Array.isArray(ch?.scenes) ? ch.scenes.length : 0;
+    }
+  }
+  return { v, c, s };
 }
 
 // ============================================================
@@ -166,35 +182,26 @@ export function OutlinePage({ projectId }: { projectId: string }) {
   const [info, setInfo] = useState("");
   const [warnings, setWarnings] = useState<string[]>([]);
 
+  // 顶层视图：手动编写 / 对话创作（进度记忆记住上次）
+  const [view, setView] = useState<"manual" | "coach">("manual");
+
   // 全局 AI 忙碌态：所有 chatJSON 共用一个 AbortController + 一个停止按钮
   const [busy, setBusy] = useState<string | null>(null);
   const abortRef = useRef<AbortController | null>(null);
-  // 切页即卸载（App 条件渲染）：在飞的 runAI 请求随之中止，不让它悄悄烧 token；
-  // 后台总纲任务走 jobBus 不受影响（那是设计上要跨页存活的任务）。
+  // 切页即卸载（App 条件渲染）：在飞的 runAI 请求随之中止，不让它悄悄烧 token。
   useEffect(() => () => abortRef.current?.abort(), []);
-
-  // 生成总纲走后台任务总线：切页/卸载不打断，完成即在任务闭包落库
-  const jobs = useJobs();
-  const runningMaster = jobs.find(
-    (j) => j.kind === "master" && j.projectId === projectId && j.status === "running",
-  );
-  const announcedRef = useRef<Set<string> | null>(null);
-
-  // 生成总纲表单
-  const [structure, setStructure] = useState<OutlineStructure>("three-act");
-  const [volumeCount, setVolumeCount] = useState("");
-  const [hint, setHint] = useState("");
 
   // 行尾「＋」加子节点菜单（parentId=null ⇔ 根级新卷）
   const [addMenu, setAddMenu] = useState<{ parentId: string | null } | null>(null);
   const [addLevel, setAddLevel] = useState<OutlineLevel>("volume");
   const [addTitle, setAddTitle] = useState("");
 
-  // 下一幕提案
-  const [sceneProp, setSceneProp] = useState<SceneProposal | null>(null);
-  const [mountChapterId, setMountChapterId] = useState("");
+  // 拖拽落点提示（id=null ⇔ 根级空白区投放；zone=三态）
+  const [tip, setTip] = useState<{ id: string | null; zone: DropZone } | null>(null);
 
-  // 剧情世界书（ST）：勾选若干幕 → 一整本不绑角色的剧情推进书
+  // 导出菜单 / 剧情世界书面板（v6：面板收进「⬇ 导出」菜单，不再常驻）
+  const [openExport, setOpenExport] = useState(false);
+  const [bookPanelOpen, setBookPanelOpen] = useState(false);
   const [bookSel, setBookSel] = useState<Set<string>>(new Set());
   const [bookIncludeDone, setBookIncludeDone] = useState(false);
   const [bookOut, setBookOut] = useState<{
@@ -205,12 +212,15 @@ export function OutlinePage({ projectId }: { projectId: string }) {
   } | null>(null);
   const bookInit = useRef(false);
 
-  // 大纲共创访谈：AI 每轮一问一边搭草稿（粗放：整体大纲/走向/细纲题目，beats 恒空）
-  const [coachMsgs, setCoachMsgs] = useState<{ role: "user" | "assistant"; content: string }[]>([]);
+  // 对话创作：AI 每轮一问一边搭草稿（粗放：整体大纲/走向/细纲题目，beats 恒空）
+  const [coachMsgs, setCoachMsgs] = useState<CoachMsg[]>([]);
   const [coachDraft, setCoachDraft] = useState<MasterOutlineJson | null>(null);
   const [coachInput, setCoachInput] = useState("");
+  // 「应用到大纲树」一步弹窗 + 顺手填充节拍勾选
+  const [appModal, setAppModal] = useState(false);
+  const [fillOnApply, setFillOnApply] = useState(true);
 
-  const reload = useCallback(async () => {
+  const reload = useCallback(async (): Promise<OutlineNode[]> => {
     try {
       const [proj, rows, chars, led] = await Promise.all([
         repos.getProject(projectId),
@@ -223,14 +233,16 @@ export function OutlinePage({ projectId }: { projectId: string }) {
       setCharacters(chars);
       setLedger(led);
       setError("");
+      return rows;
     } catch (e) {
       setError(errMsg(e));
+      return [];
     } finally {
       setLoaded(true);
     }
   }, [projectId]);
 
-  // ---------- 剧情世界书（ST · 幕粒度 · 不绑角色） ----------
+  // ---------- 剧情世界书（ST · 幕粒度 · 不绑角色；入口在「⬇ 导出」菜单） ----------
 
   /** 树序（叙事序）里的全部「幕」 */
   const bookScenes = preorder(nodes).filter((n) => n.level === "scene");
@@ -260,7 +272,7 @@ export function OutlinePage({ projectId }: { projectId: string }) {
     const nameById = new Map(characters.map((c) => [c.id, c.name] as const));
     const picked = preorder(nodes).filter((n) => n.level === "scene" && bookSel.has(n.id));
     if (picked.length === 0) {
-      setError("先在左侧清单勾选至少一幕。");
+      setError("先在清单里勾选至少一幕。");
       return;
     }
     const scenes: OutlineBookScene[] = picked.map((n) => ({
@@ -303,33 +315,23 @@ export function OutlinePage({ projectId }: { projectId: string }) {
     setInfo((await copyToClipboard(bookOut.json)) ? "剧情世界书 JSON 已复制到剪贴板" : "复制失败，请改用下载");
   };
 
-  // ---------- 大纲共创访谈：一边访谈一边搭草稿 → 应用 / 填细纲 / 直通成书 ----------
+  // ---------- 对话创作：访谈搭草稿 → 弹窗应用（可顺手填节拍）/ 直通成书 ----------
 
-  const coachStats = (() => {
-    let v = 0;
-    let c = 0;
-    let s = 0;
-    for (const vol of coachDraft?.volumes ?? []) {
-      v++;
-      for (const ch of Array.isArray(vol?.chapters) ? vol.chapters : []) {
-        c++;
-        s += Array.isArray(ch?.scenes) ? ch.scenes.length : 0;
-      }
-    }
-    return { v, c, s };
-  })();
+  const coachStats = countDraft(coachDraft);
 
-  const sendCoach = async () => {
-    const text = coachInput.trim();
-    if (!text || !project) return;
-    const hist = coachMsgs;
-    const draftNow = coachDraft;
-    setCoachInput("");
+  /** textArg：气泡「重试本轮」传入该轮的用户原文；省略=取输入框当前内容 */
+  const sendCoach = async (textArg?: string) => {
+    if (!project) return;
+    const text = (textArg ?? coachInput).trim();
+    if (!text) return;
+    const hist = coachMsgs.map((m) => ({ role: m.role, content: m.content }));
+    const draftPrev = coachDraft;
+    if (textArg === undefined) setCoachInput("");
     setCoachMsgs((m) => [...m, { role: "user", content: text }]);
     const r = await runAI("共创访谈", (signal) =>
       chatJSON<unknown>(
         [
-          { role: "system", content: outlineCoachPrompt(project.bible.fields, draftNow, ledgerFacts(ledger, nodes)) },
+          { role: "system", content: outlineCoachPrompt(project.bible.fields, draftPrev, ledgerFacts(ledger, nodes)) },
           ...hist,
           { role: "user", content: text },
         ],
@@ -338,25 +340,65 @@ export function OutlinePage({ projectId }: { projectId: string }) {
     );
     if (!r.ok) return;
     const rec = asRecord(r.value);
-    const reply = asStr(rec?.reply) || "（本轮模型未给出可读回复，可直接重发上一条）";
+    const reply = asStr(rec?.reply) || "（本轮模型未给出可读回复，可点「重试本轮」）";
     const draftVal = rec?.draft;
-    if (draftVal && typeof draftVal === "object" && !Array.isArray(draftVal)) {
-      setCoachDraft(draftVal as MasterOutlineJson);
-    }
-    setCoachMsgs((m) => [...m, { role: "assistant", content: reply }]);
+    // 反「只说不做」解析层：不信任模型——draft 无效则保留旧草稿并记 badDraft，界面如实说"未发生创作"
+    const draftOk = !!draftVal && typeof draftVal === "object" && !Array.isArray(draftVal);
+    const nextDraft = draftOk ? (draftVal as MasterOutlineJson) : draftPrev;
+    if (draftOk) setCoachDraft(nextDraft);
+    setCoachMsgs((m) => [
+      ...m,
+      {
+        role: "assistant",
+        content: reply,
+        diff: draftDiff(draftPrev, nextDraft),
+        claimed: claimsCompletion(reply),
+        badDraft: !draftOk,
+      },
+    ]);
     if (rec?.ready === true || asStr(rec?.phase) === "ready") {
-      setInfo("大纲草稿已就绪：可「应用到大纲树」「AI 填充细纲」（先应用）或「导出为世界书」。");
+      setInfo("AI 认为盘子已齐：核对右侧草稿预览，满意后点「应用到大纲树」（永不自动写入）。");
     }
   };
 
-  const applyCoachDraft = async () => {
-    if (!coachDraft) return;
-    if (
-      nodes.length > 0 &&
-      !window.confirm("当前大纲非空：草稿将追加为新卷根节点（不动既有节点）。继续？")
-    ) {
-      return;
+  /**
+   * 细纲填充：给指定空幕批量生成节拍（逐个串行，可停止；中途停止已写入保留）。
+   * 必须走 repos.updateNode（revision+1）：编辑器 key 含 revision，会重挂载同步草稿态。
+   * 直写 db 不动 revision → 打开着的编辑器仍持旧副本，下一次保存静默抹掉 AI 填的节拍。
+   */
+  const fillBeats = async (targets: OutlineNode[], rows: OutlineNode[]) => {
+    if (!project || targets.length === 0) return;
+    const fields = project.bible.fields;
+    const allScenes = preorder(rows).filter((n) => n.level === "scene");
+    let filled = 0;
+    const r = await runAI(`AI 填充细纲（共 ${targets.length} 幕）`, async (signal) => {
+      for (const sc of targets) {
+        if (signal.aborted) break;
+        const prev = allScenes[allScenes.indexOf(sc) - 1] ?? null;
+        const value = await chatJSON<unknown>(
+          sceneBeatsPrompt(sc, lineageOf(rows, sc.id).filter((x) => x.id !== sc.id), prev, fields),
+          { role: "writer", signal },
+        );
+        const rec = asRecord(value);
+        const beats = beatsFromStrings(Array.isArray(rec?.beats) ? (rec?.beats as unknown[]) : [], repos.uid);
+        if (beats.length > 0) {
+          await repos.updateNode(sc.id, { beats });
+          filled++;
+        }
+      }
+      return filled;
+    });
+    // 部分写入也要可见：中途出错/停止时已写入的幕立即刷新上树
+    await reload();
+    if (r.ok) {
+      setInfo(`AI 填充细纲完成：${filled}/${targets.length} 幕已写入节拍（停止或失败的幕保持空，可重试）。`);
     }
+  };
+
+  /** 「应用到大纲树」弹窗确认：bulkAdd 直通 + 可勾选顺手填充这些新空幕 */
+  async function applyDraft(fill: boolean) {
+    if (!coachDraft) return;
+    setAppModal(false);
     try {
       const mapped = masterToNodes(coachDraft, projectId, {
         charactersByName: charactersByNameMap(characters),
@@ -367,54 +409,23 @@ export function OutlinePage({ projectId }: { projectId: string }) {
         return;
       }
       await db.outlineNodes.bulkAdd(mapped.nodes);
-      await reload();
+      const rows = await reload();
       setWarnings(mapped.warnings);
       setInfo(
         `草稿已应用 ${mapped.nodes.length} 个节点（卷/章/幕，状态=草案）。` +
           (mapped.logline ? `logline：${mapped.logline}` : ""),
       );
+      if (fill) {
+        const newIds = new Set(
+          mapped.nodes.filter((n) => n.level === "scene" && n.beats.length === 0).map((n) => n.id),
+        );
+        const newScenes = rows.filter((n) => newIds.has(n.id));
+        if (newScenes.length > 0) await fillBeats(newScenes, rows);
+      }
     } catch (e) {
       setError(errMsg(e));
     }
-  };
-
-  /** 细纲填充：为树上所有「空幕」批量生成节拍（先应用草稿；逐个串行，可停止） */
-  const fillBeats = async () => {
-    if (!project) return;
-    const targets = preorder(nodes).filter((n) => n.level === "scene" && n.beats.length === 0);
-    if (targets.length === 0) {
-      setInfo("没有空节拍的幕：请先「应用到大纲树」，或所有幕已有节拍（细纲已填或手动写过）。");
-      return;
-    }
-    const fields = project.bible.fields;
-    const pre = preorder(nodes);
-    const allScenes = pre.filter((n) => n.level === "scene");
-    let filled = 0;
-    const r = await runAI(`AI 填充细纲（共 ${targets.length} 幕）`, async (signal) => {
-      for (const sc of targets) {
-        if (signal.aborted) break;
-        const prev = allScenes[allScenes.indexOf(sc) - 1] ?? null;
-        const value = await chatJSON<unknown>(
-          sceneBeatsPrompt(sc, lineageOf(nodes, sc.id).filter((x) => x.id !== sc.id), prev, fields),
-          { role: "writer", signal },
-        );
-        const rec = asRecord(value);
-        const beats = beatsFromStrings(Array.isArray(rec?.beats) ? (rec?.beats as unknown[]) : [], repos.uid);
-        if (beats.length > 0) {
-          // 必须走 repos.updateNode（revision+1）：编辑器 key 含 revision，会重挂载同步草稿态。
-          // 直写 db 不动 revision → 打开着的编辑器仍持旧副本，下一次保存静默抹掉 AI 填的节拍。
-          await repos.updateNode(sc.id, { beats });
-          filled++;
-        }
-      }
-      return filled;
-    });
-    // 部分写入也要可见：中途出错/停止时已写入的幕立即刷新上树（原来只在整体成功时 reload）
-    await reload();
-    if (r.ok) {
-      setInfo(`AI 填充细纲完成：${filled}/${targets.length} 幕已写入节拍（停止或失败的幕保持空，可重试）。`);
-    }
-  };
+  }
 
   /** 草稿直通成书：不建树也能导出剧情推进世界书（幕条目无节拍，仅目标与时空） */
   const exportDraftBook = () => {
@@ -433,7 +444,7 @@ export function OutlinePage({ projectId }: { projectId: string }) {
         fileName: `worldbook-剧情推进-${project?.title || "project"}.json`,
         skippedDone: result.skippedDone,
       });
-      setInfo("已从访谈草稿导出世界书——下载/复制见下方「剧情世界书」面板的结果区。");
+      setInfo("已从访谈草稿导出世界书——下载/复制见下方结果区。");
     } catch (e) {
       setError(errMsg(e));
     }
@@ -444,28 +455,65 @@ export function OutlinePage({ projectId }: { projectId: string }) {
     void reload();
   }, [reload]);
 
-  // v3.1-② 进度记忆：选中节点 + 共创访谈输入框草稿，数据就绪（loaded）后恢复一次。
-  // 校验保存的 selectedId 仍在现有节点里（防已删节点）。
+  // v3.1-② 进度记忆（v6 扩容）：视图 + 选中节点 + 访谈输入框/消息/草稿，数据就绪后恢复一次。
+  // 全部防御式解析：旧桶缺新键=默认值；校验保存的 selectedId 仍在现有节点里（防已删节点）。
   const selRestoredFor = useRef<string | null>(null);
   useEffect(() => {
     if (!loaded || selRestoredFor.current === projectId) return;
     selRestoredFor.current = projectId;
-    const saved = loadProgress<{ selectedId?: string; coachInput?: string }>("outline", projectId);
+    const saved = loadProgress<{
+      selectedId?: string;
+      coachInput?: string;
+      view?: string;
+      msgs?: SavedMsg[];
+      draft?: unknown;
+    }>("outline", projectId);
     if (!saved) return;
+    if (saved.view === "coach") setView("coach");
     if (saved.selectedId && nodes.some((n) => n.id === saved.selectedId)) setSelectedId(saved.selectedId);
     if (typeof saved.coachInput === "string" && saved.coachInput) setCoachInput(saved.coachInput.slice(0, 4000));
+    if (Array.isArray(saved.msgs)) {
+      const msgs: CoachMsg[] = [];
+      for (const item of saved.msgs) {
+        if (!item || (item.role !== "user" && item.role !== "assistant") || typeof item.content !== "string") continue;
+        const m: CoachMsg = { role: item.role, content: item.content.slice(0, 2000) };
+        if (Array.isArray(item.d) && item.d.length === 3 && item.d.every((x) => typeof x === "number")) {
+          m.diff = { volumes: item.d[0], chapters: item.d[1], scenes: item.d[2] };
+        }
+        if (item.claimed === true) m.claimed = true;
+        if (item.bad === true) m.badDraft = true;
+        msgs.push(m);
+      }
+      setCoachMsgs(msgs.slice(-60));
+    }
+    const dr = asRecord(saved.draft);
+    if (dr) setCoachDraft(saved.draft as MasterOutlineJson);
   }, [loaded, nodes, projectId]);
   // 进度持久化：coachInput 每击键都会触发整个进度回写 localStorage，改为 400ms 防抖；
-  // 卸载/关页前 flushNow 兜底，不丢最后一笔。
+  // 卸载/关页前 flushNow 兜底，不丢最后一笔。coachMsgs 截尾 60 条/单条 2000 字；
+  // coachDraft 序列化后 ≤200KB 才入桶（超限宁可这轮不存草稿，不整桶写失败）。
   const progressWriteRef = useRef<() => void>(() => {});
   progressWriteRef.current = () => {
     if (!loaded || selRestoredFor.current !== projectId) return;
-    saveProgress("outline", projectId, { selectedId, coachInput: coachInput.slice(0, 4000) });
+    const draftStr = coachDraft ? JSON.stringify(coachDraft) : "";
+    saveProgress("outline", projectId, {
+      view,
+      selectedId,
+      coachInput: coachInput.slice(0, 4000),
+      msgs: coachMsgs.slice(-60).map((m) => ({
+        role: m.role,
+        content: m.content.slice(0, 2000),
+        ...(m.diff ? { d: [m.diff.volumes, m.diff.chapters, m.diff.scenes] as [number, number, number] } : {}),
+        ...(m.claimed ? { claimed: true } : {}),
+        ...(m.badDraft ? { bad: true } : {}),
+      })),
+      ...(draftStr && draftStr.length <= 200000 ? { draft: coachDraft } : {}),
+    });
   };
   const progressDeb = useRef(makeDebouncer(400, () => progressWriteRef.current()));
   useEffect(() => {
     progressDeb.current.bump();
-  }, [loaded, projectId, selectedId, coachInput]);
+  }, [loaded, projectId, selectedId, coachInput, view, coachMsgs, coachDraft]);
   useEffect(() => {
     const flush = () => progressDeb.current.flushNow();
     window.addEventListener("pagehide", flush);
@@ -474,34 +522,6 @@ export function OutlinePage({ projectId }: { projectId: string }) {
       progressDeb.current.flushNow();
     };
   }, []);
-
-  // 总纲任务终结 → 播报并刷新；首次进入时已终结的任务记为已知
-  // （它们的结果早已落库，上面的 reload 已把数据带进来，不重复播报）。
-  // 若任务在「离开本页期间」完成，重进时同样不会重复弹窗，但数据是新的。
-  useEffect(() => {
-    const finished = jobs.filter(
-      (j) => j.kind === "master" && j.projectId === projectId && j.status !== "running",
-    );
-    if (announcedRef.current === null) {
-      announcedRef.current = new Set(finished.map((j) => j.id));
-      return;
-    }
-    for (const j of finished) {
-      if (announcedRef.current.has(j.id)) continue;
-      announcedRef.current.add(j.id);
-      void reload();
-      if (j.status === "done") {
-        setInfo(
-          "总纲生成完成（明细见右下「生成监视」窗）" +
-            (j.log.includes("⚠") ? "；有映射警告，建议查看" : ""),
-        );
-      } else if (j.status === "error") {
-        setError(`总纲生成失败：${j.error ?? "未知错误"}`);
-      } else {
-        setInfo("总纲生成已停止（未写入任何节点）。");
-      }
-    }
-  }, [jobs, projectId, reload]);
 
   // ---------- 全局 AI 执行器：一个忙碌态、一个可停止的 AbortController ----------
 
@@ -534,155 +554,33 @@ export function OutlinePage({ projectId }: { projectId: string }) {
     }
   }
 
-  // ---------- 工具栏 1：生成总纲（后台任务：切页不打断，右下监视窗实时可见） ----------
+  // ---------- 拖拽排序（手动编写核心）：plan → 单事务落库（revision 不动） ----------
 
-  function generateMaster() {
-    if (!project) return;
-    if (runningMaster) {
-      window.alert("本项目的总纲生成正在后台进行（右下角「生成监视」窗可查看，切页不会中断）。");
-      return;
-    }
-    if (
-      nodes.length > 0 &&
-      !window.confirm("当前大纲非空：生成总纲将追加新卷根节点（不动既有节点）。继续？")
-    ) {
-      return;
-    }
-    const vc = Number.parseInt(volumeCount, 10);
-    const req = {
-      structure,
-      volumeCount: Number.isNaN(vc) || vc <= 0 ? undefined : vc,
-      hint: hint.trim() || undefined,
-    };
-    // 启动瞬间快照：之后离开本页、甚至改表单都不影响这个任务
-    const fieldsSnapshot = project.bible.fields;
-    const byName = charactersByNameMap(characters);
-    startJob({
-      kind: "master",
-      label: `生成总纲 · ${structure}`,
-      projectId,
-      task: async (ctx) => {
-        ctx.note(
-          `提交请求：结构 ${req.structure}` +
-            (req.volumeCount ? ` · 期望 ${req.volumeCount} 卷` : "") +
-            (req.hint ? ` · 提示「${req.hint}」` : ""),
-        );
-        ctx.note("── 模型输出（流式） ──");
-        const value = await chatJSON<unknown>(
-          masterOutlinePrompt(fieldsSnapshot, req),
-          { role: "writer", signal: ctx.signal, onDelta: ctx.onDelta },
-        );
-        ctx.note("── 输出结束，映射为大纲树 ──");
-        const mapped = masterToNodes(value, projectId, {
-          charactersByName: byName,
-          uid: repos.uid,
-        });
-        if (mapped.nodes.length === 0) {
-          throw new Error("总纲映射结果为空（没有可导入的卷），未写入任何节点");
-        }
-        await db.outlineNodes.bulkAdd(mapped.nodes);
-        ctx.note(
-          `已写入 ${mapped.nodes.length} 个节点（卷/章/幕，状态=草案）` +
-            (mapped.logline ? `；logline：${mapped.logline}` : ""),
-        );
-        for (const w of mapped.warnings) ctx.note(`⚠ ${w}`);
-      },
-    });
-    setWarnings([]);
-    setError("");
-    setInfo("总纲生成已转入后台：切换页面不会中断，进度见右下角「生成监视」窗；完成后自动写入大纲树。");
+  /** 落点三态：行上/下缘 25% = before/after（插为兄弟），中段 50% = child（成为其子级） */
+  function zoneOf(e: ReactDragEvent): DropZone {
+    const r = e.currentTarget.getBoundingClientRect();
+    const rel = (e.clientY - r.top) / Math.max(1, r.height);
+    return rel < 0.25 ? "before" : rel > 0.75 ? "after" : "child";
   }
 
-  // ---------- 工具栏 2：下一幕提案 ----------
-
-  async function proposeNext() {
-    if (!project) return;
-    const pre = preorder(nodes);
-    const chapters = pre.filter((n) => n.level === "chapter");
-    if (chapters.length === 0) {
-      window.alert("大纲里还没有「章」。请先用「生成总纲」（或手动建卷/章），再提案下一幕。");
+  async function applyPlan(dragId: string, targetId: string | null, zone: DropZone) {
+    const res = moveNodePlan(nodes, dragId, targetId, zone);
+    if (!res) return; // 悬空或原地无变化：静默
+    if ("error" in res) {
+      setError(res.error);
       return;
     }
-    const spine = pre.filter((n) => n.level === "volume" || n.level === "chapter");
-    const doneScenes = pre.filter(
-      (n) => n.level === "scene" && (n.status === "tested" || n.status === "locked"),
-    );
-    const r = await runAI("下一幕提案", (signal) =>
-      chatJSON<unknown>(nextScenePrompt(spine, doneScenes, project.bible.fields, ledger, ledgerFacts(ledger, nodes)), {
-        role: "writer",
-        signal,
-      }),
-    );
-    if (!r.ok) return;
-    // 防御式校验：json.scene 必须是对象且 title 非空，否则拒绝入库
-    const sceneRec = asRecord(asRecord(r.value)?.scene);
-    const title = asStr(sceneRec?.title);
-    if (!sceneRec || !title) {
-      setError("下一幕提案形态非法（缺 scene.title），已拒绝入库。可重试一次。");
-      return;
+    const t = nodes.find((n) => n.id === dragId);
+    try {
+      await repos.applyMovePlan(res.updates);
+      await reload();
+      setInfo(`已移动「${t?.title || dragId}」（换序=改叙事顺序：导出/试跑/剧场的幕序都会跟着变）。`);
+    } catch (e) {
+      setError(`移动失败：${errMsg(e)}`);
     }
-    // 默认挂载点：最后一个已上演幕的父章；没有则第一个章
-    const byId = new Map(nodes.map((n) => [n.id, n]));
-    let mount = chapters[0].id;
-    const lastDone = doneScenes[doneScenes.length - 1];
-    const lastParent = lastDone?.parentId ? byId.get(lastDone.parentId) : undefined;
-    if (lastParent && lastParent.level === "chapter") mount = lastParent.id;
-    setSceneProp({
-      title,
-      intent: asStr(sceneRec.intent),
-      location: asStr(sceneRec.location),
-      timepoint: asStr(sceneRec.timepoint),
-      castNames: asStrArray(sceneRec.cast),
-      beats: asStrArray(sceneRec.beats),
-    });
-    setMountChapterId(mount);
-    setInfo("");
   }
 
-  async function createSceneFromProposal() {
-    if (!sceneProp) return;
-    const chapter = nodes.find((n) => n.id === mountChapterId && n.level === "chapter");
-    if (!chapter) {
-      window.alert("请先选择一个有效的挂载章节。");
-      return;
-    }
-    const siblings = childrenOf(nodes, chapter.id); // flow 纯函数：order 升序
-    const now = Date.now();
-    const map = charactersByNameMap(characters);
-    const cast: string[] = [];
-    const unmatched: string[] = [];
-    for (const nm of sceneProp.castNames) {
-      const cid = map[nm];
-      if (cid) cast.push(cid);
-      else unmatched.push(nm);
-    }
-    const node: OutlineNode = {
-      id: repos.uid(),
-      projectId,
-      parentId: chapter.id,
-      level: "scene",
-      order: siblings.length ? siblings[siblings.length - 1].order + 1 : 0,
-      title: sceneProp.title,
-      intent: sceneProp.intent,
-      beats: beatsFromStrings(sceneProp.beats, repos.uid),
-      cast,
-      location: sceneProp.location || undefined,
-      timepoint: sceneProp.timepoint || undefined,
-      foreshadows: [],
-      status: "draft",
-      revision: 1,
-      createdAt: now,
-      updatedAt: now,
-    };
-    await db.outlineNodes.add(node);
-    setSceneProp(null);
-    setWarnings(unmatched.map((nm) => `角色「${nm}」未在人物库中匹配到，未写入本场 cast。`));
-    setInfo(`已在章「${chapter.title}」下创建幕「${node.title}」。`);
-    setSelectedId(node.id);
-    await reload();
-  }
-
-  // ---------- 工具栏 3：导出 Markdown ----------
+  // ---------- 工具栏：导出 Markdown ----------
 
   function exportMarkdown() {
     if (nodes.length === 0) {
@@ -691,6 +589,7 @@ export function OutlinePage({ projectId }: { projectId: string }) {
     }
     // downloadText：带 body 挂载的下载（Firefox 无此不触发）+ 统一 revoke，勿再手搓
     downloadText("outline.md", treeToMarkdown(nodes));
+    setOpenExport(false);
   }
 
   // ---------- 树：手动加子节点（层级下拉 = validatePlacement 允许的组合） ----------
@@ -763,13 +662,46 @@ export function OutlinePage({ projectId }: { projectId: string }) {
     );
   }
 
-  // ---------- 树渲染：flow.childrenOf 对本地数组递归 + 缩进 ----------
+  // ---------- 树渲染：flow.childrenOf 对本地数组递归 + 缩进 + 拖拽落点 ----------
+
+  /** 落点视觉：before/after 画行缘插入线；child 整行描边高亮 */
+  function tipStyle(id: string): CSSProperties {
+    if (!tip || tip.id !== id) return {};
+    if (tip.zone === "before") return { boxShadow: "inset 0 2px 0 0 var(--accent)" };
+    if (tip.zone === "after") return { boxShadow: "inset 0 -2px 0 0 var(--accent)" };
+    return { outline: "2px solid var(--accent)", background: "rgba(176, 124, 60, 0.08)" };
+  }
 
   function renderTree(parentId: string | null, depth: number): ReactNode[] {
     return childrenOf(nodes, parentId).map((n) => (
       <div key={n.id}>
         <div
           className="row"
+          draggable
+          onDragStart={(e) => {
+            e.dataTransfer.setData("text/plain", n.id); // Firefox 必需 setData
+            e.dataTransfer.effectAllowed = "move";
+          }}
+          onDragEnd={() => setTip(null)}
+          onDragOver={(e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            e.dataTransfer.dropEffect = "move";
+            const z = zoneOf(e);
+            if (tip?.id !== n.id || tip?.zone !== z) setTip({ id: n.id, zone: z });
+          }}
+          onDragLeave={(e) => {
+            e.stopPropagation();
+            setTip((t) => (t && t.id === n.id ? null : t));
+          }}
+          onDrop={(e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            const dragId = e.dataTransfer.getData("text/plain");
+            const z = zoneOf(e);
+            setTip(null);
+            if (dragId && dragId !== n.id) void applyPlan(dragId, n.id, z);
+          }}
           style={{
             paddingLeft: depth * 18 + 6,
             paddingRight: 6,
@@ -778,9 +710,13 @@ export function OutlinePage({ projectId }: { projectId: string }) {
             cursor: "pointer",
             borderRadius: 6,
             background: selectedId === n.id ? "#efe6d8" : undefined,
+            ...tipStyle(n.id),
           }}
           onClick={() => setSelectedId(n.id)}
         >
+          <span title="拖动：改顺序或换父级（上/下缘=插为兄弟，中段=成为子级）" style={{ cursor: "grab", width: 16, textAlign: "center" }}>
+            ⠿
+          </span>
           <span style={{ width: 20, textAlign: "center" }}>{LEVEL_ICONS[n.level]}</span>
           <span
             style={{
@@ -806,13 +742,13 @@ export function OutlinePage({ projectId }: { projectId: string }) {
             ＋
           </button>
         </div>
-        {addMenu && addMenu.parentId === n.id ? renderAddForm(n, depth + 1) : null}
+        {addMenu && addMenu.parentId === n.id ? renderAddForm(n, depth) : null}
         {renderTree(n.id, depth + 1)}
       </div>
     ));
   }
 
-  // ---------- 节点编辑器的持久操作（保存/状态/删除/AI 共写调用） ----------
+  // ---------- 节点编辑器的持久操作（保存/状态/删除） ----------
 
   async function saveNode(id: string, patch: OutlineNodePatch) {
     try {
@@ -845,39 +781,46 @@ export function OutlinePage({ projectId }: { projectId: string }) {
     }
   }
 
-  async function runDiscuss(node: OutlineNode): Promise<DiscussProposal | null> {
-    if (!project) return null;
-    const ancestors = lineageOf(nodes, node.id).slice(0, -1); // 根→…→父（不含自身）
-    const r = await runAI("AI 共写", (signal) =>
-      chatJSON<unknown>(nodeDiscussPrompt(node, ancestors, project.bible.fields), {
-        role: "writer",
-        signal,
-      }),
+  // ---------- 渲染共用：世界书结果区（勾幕成书 / 草稿直通成书 共用 bookOut） ----------
+
+  function renderBookResult(): ReactNode {
+    if (!bookOut) return null;
+    return (
+      <div className="panel" style={{ marginTop: 8 }}>
+        <div className="row">
+          <strong style={{ fontSize: 13 }}>生成结果</strong>
+          <span className="muted">
+            {bookOut.lines.length} 条幕指令{bookOut.skippedDone > 0 ? `（已跳过演完 ${bookOut.skippedDone} 幕）` : ""}
+          </span>
+          <button onClick={() => downloadText(bookOut.fileName, bookOut.json)}>⬇ 下载 {bookOut.fileName}</button>
+          <button onClick={() => void copyBook()}>复制 JSON</button>
+        </div>
+        <ul className="muted" style={{ fontSize: 12, margin: "6px 0" }}>
+          {bookOut.lines.slice(0, 12).map((l, i) => (
+            <li key={i}>{l}</li>
+          ))}
+          {bookOut.lines.length > 12 && <li>…（共 {bookOut.lines.length} 条，全量见 JSON）</li>}
+        </ul>
+        <textarea readOnly rows={6} style={{ width: "100%", fontSize: 12 }} value={bookOut.json} />
+      </div>
     );
-    if (!r.ok) return null;
-    const rec = asRecord(r.value);
-    const nrec = asRecord(rec?.node);
-    const rawFo = Array.isArray(rec?.foreshadows) ? rec.foreshadows : [];
-    return {
-      comment: asStr(rec?.comment),
-      title: asStr(nrec?.title),
-      intent: asStr(nrec?.intent),
-      beats: asStrArray(nrec?.beats),
-      foreshadows: rawFo
-        .map(asRecord)
-        .filter((x): x is Record<string, unknown> => x !== null)
-        .map((f) => ({ setup: asStr(f.setup), payoffIn: asStr(f.payoffIn) }))
-        .filter((f) => f.setup),
-    };
   }
 
-  // ---------- 渲染 ----------
+  // ---------- 主渲染 ----------
 
   const selected = selectedId ? nodes.find((n) => n.id === selectedId) : undefined;
   const selectedPath = selected
     ? lineageOf(nodes, selected.id).slice(0, -1).map((n) => n.title).join(" › ")
     : "";
-  const chapterOptions = preorder(nodes).filter((n) => n.level === "chapter");
+  // 编辑器「移动到…」候选：章→卷、幕→章；排除自身子树（防环兜底在 moveNodePlan 里还有第二道）
+  const moveOptions = (() => {
+    if (!selected || selected.level === "volume") return [];
+    const want: OutlineLevel = selected.level === "chapter" ? "volume" : "chapter";
+    const sub = new Set(subtreeIds(nodes, selected.id));
+    return preorder(nodes)
+      .filter((n) => n.level === want && !sub.has(n.id))
+      .map((n) => ({ id: n.id, label: lineageOf(nodes, n.id).map((x) => x.title).join(" › ") }));
+  })();
 
   return (
     <div>
@@ -899,106 +842,247 @@ export function OutlinePage({ projectId }: { projectId: string }) {
       )}
       {info && <p className="muted">{info}</p>}
 
-      <div style={twoCol}>
-        {/* ================= 左列 ================= */}
-        <div>
-          <div className="panel">
-            <div className="row" style={{ flexWrap: "wrap", alignItems: "flex-end" }}>
-              <label className="field">
-                <span>结构骨架</span>
-                <select value={structure} onChange={(e) => setStructure(e.target.value as OutlineStructure)}>
-                  {STRUCTURES.map((s) => (
-                    <option key={s} value={s}>
-                      {STRUCTURE_NAMES[s]}
-                    </option>
-                  ))}
-                </select>
-              </label>
-              <label className="field">
-                <span>卷数（可空）</span>
-                <input
-                  type="number"
-                  min={1}
-                  style={{ width: 88 }}
-                  value={volumeCount}
-                  onChange={(e) => setVolumeCount(e.target.value)}
-                />
-              </label>
-              <label className="field" style={{ flex: 1, minWidth: 200 }}>
-                <span>补充要求（可选 hint）</span>
-                <textarea rows={2} value={hint} onChange={(e) => setHint(e.target.value)} placeholder="如：第一卷必须以一场背叛收尾" />
-              </label>
-            </div>
-            <div className="row" style={{ marginTop: 10, flexWrap: "wrap" }}>
-              <button
-                className="primary"
-                disabled={busy !== null || runningMaster !== undefined || !project}
-                onClick={generateMaster}
-              >
-                {runningMaster ? "🧭 总纲生成中…" : "🧭 生成总纲"}
-              </button>
-              {runningMaster && (
-                <button onClick={() => abortJob(runningMaster.id)}>⏹ 停止总纲</button>
-              )}
-              <button disabled={busy !== null || !project} onClick={() => void proposeNext()}>
-                🎬 下一幕提案
-              </button>
-              <button disabled={nodes.length === 0} onClick={exportMarkdown}>
-                ⬇ 导出 Markdown
-              </button>
-              {busy && (
-                <>
-                  <span className="muted">⏳ {busy}中…</span>
-                  <button onClick={stop}>⏹ 停止</button>
-                </>
-              )}
-            </div>
-          </div>
+      {/* 顶层视图切换 */}
+      <div className="row" style={{ marginBottom: 10 }}>
+        <button className={view === "manual" ? "tab active" : "tab"} onClick={() => setView("manual")}>
+          ✍️ 手动编写
+        </button>
+        <button className={view === "coach" ? "tab active" : "tab"} onClick={() => setView("coach")}>
+          💬 对话创作
+        </button>
+        {busy && (
+          <span className="row" style={{ marginLeft: "auto" }}>
+            <span className="muted">⏳ {busy}中…</span>
+            <button onClick={stop}>⏹ 停止</button>
+          </span>
+        )}
+      </div>
 
-          {/* ---------- 大纲共创访谈：AI 一边访谈一边搭大纲（粗放：只定盘子） ---------- */}
-          <div className="panel">
-            <div className="row" style={{ marginBottom: 6, flexWrap: "wrap" }}>
-              <strong>✍️ 大纲共创访谈</strong>
-              <span className="muted">每轮一问，只谈整体大纲/走向/细纲题目；草稿随对话生长</span>
-              {coachStats.s > 0 && (
-                <span className="muted" style={{ marginLeft: "auto" }}>
-                  草稿：{coachStats.v} 卷 · {coachStats.c} 章 · {coachStats.s} 幕
+      {view === "manual" ? (
+        <div style={twoCol}>
+          {/* ================= 左列：工具条 + 树 + 导出面板 ================= */}
+          <div>
+            <div className="panel">
+              <div className="row" style={{ flexWrap: "wrap" }}>
+                <strong>大纲树</strong>
+                <span className="muted">{loaded ? `${nodes.length} 个节点 · ⠿ 拖行排序/换父级` : "读取中…"}</span>
+                <button onClick={() => openAddMenu(null)}>＋ 新卷</button>
+                <span style={{ position: "relative" }}>
+                  <button onClick={() => setOpenExport((o) => !o)} disabled={!loaded}>
+                    ⬇ 导出 ▾
+                  </button>
+                  {openExport && (
+                    <div
+                      className="panel"
+                      style={{ position: "absolute", right: 0, top: "100%", zIndex: 20, minWidth: 230, margin: 0 }}
+                    >
+                      <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                        <button onClick={exportMarkdown} disabled={nodes.length === 0}>
+                          大纲 Markdown
+                        </button>
+                        <button
+                          onClick={() => {
+                            setBookPanelOpen((o) => !o);
+                            setOpenExport(false);
+                          }}
+                          disabled={bookScenes.length === 0}
+                        >
+                          {bookPanelOpen ? "关闭" : "打开"}剧情世界书（勾幕成书）
+                        </button>
+                        <button
+                          onClick={() => {
+                            setOpenExport(false);
+                            setView("coach");
+                          }}
+                          disabled={coachStats.s === 0}
+                          title="切到对话创作视图，从当前草稿导出"
+                        >
+                          从对话草稿导出世界书
+                        </button>
+                      </div>
+                    </div>
+                  )}
                 </span>
-              )}
+              </div>
             </div>
-            {coachMsgs.length > 0 && (
+
+            <div className="panel">
+              {addMenu && addMenu.parentId === null ? renderAddForm(null, 0) : null}
+              {loaded && nodes.length === 0 && (
+                <p className="muted">还没有节点：切到「💬 对话创作」聊出一个盘子，或「＋ 新卷」手动搭骨架。</p>
+              )}
+              {/* 空白投放区：把「卷」拖到这里 = 追加为根级新卷（非法投放由 moveNodePlan 拒绝） */}
               <div
-                style={{
-                  maxHeight: 260,
-                  overflowY: "auto",
-                  display: "flex",
-                  flexDirection: "column",
-                  gap: 8,
-                  marginBottom: 8,
+                style={{ maxHeight: "60vh", overflowY: "auto", ...(tip?.id === null ? { outline: "2px dashed var(--accent)", outlineOffset: -2 } : {}) }}
+                onDragOver={(e) => {
+                  e.preventDefault();
+                  setTip({ id: null, zone: "child" });
+                }}
+                onDragLeave={() => setTip((t) => (t && t.id === null ? null : t))}
+                onDrop={(e) => {
+                  e.preventDefault();
+                  const dragId = e.dataTransfer.getData("text/plain");
+                  setTip(null);
+                  if (dragId) void applyPlan(dragId, null, "child");
                 }}
               >
-                {coachMsgs.map((m, i) => (
-                  <div
-                    key={i}
-                    style={{
-                      alignSelf: m.role === "user" ? "flex-end" : "flex-start",
-                      maxWidth: "92%",
-                      whiteSpace: "pre-wrap",
-                      wordBreak: "break-word",
-                      padding: "6px 10px",
-                      borderRadius: 10,
-                      border: "1px solid var(--line)",
-                      background: m.role === "user" ? "var(--accent)" : "var(--panel)",
-                      color: m.role === "user" ? "#fff" : undefined,
-                      fontSize: 13,
-                    }}
-                  >
-                    {m.content}
-                  </div>
-                ))}
-                {busy && <div className="muted" style={{ fontSize: 12 }}>⏳ {busy}中…</div>}
+                {renderTree(null, 0)}
+              </div>
+            </div>
+
+            {/* ---------- 剧情世界书（ST）：v6 起经「⬇ 导出」菜单开关 ---------- */}
+            {bookPanelOpen && (
+              <div className="panel">
+                <div className="row" style={{ marginBottom: 6, flexWrap: "wrap" }}>
+                  <strong>🥁 剧情世界书（ST）</strong>
+                  <span className="muted">每幕一条导演指令 · 不绑角色（用 {"{{char}}"}/{"{{user}}"} 变量）</span>
+                </div>
+                {bookScenes.length === 0 ? (
+                  <p className="muted">还没有「幕」节点：先搭建或聊出大纲，再回来成书。</p>
+                ) : (
+                  <>
+                    <div className="row" style={{ marginBottom: 4, flexWrap: "wrap" }}>
+                      <button onClick={() => setBookSel(new Set(bookScenes.map((n) => n.id)))}>全选</button>
+                      <button onClick={() => setBookSel(new Set())}>清空</button>
+                      <span className="muted">
+                        已选 {bookScenes.filter((n) => bookSel.has(n.id)).length}/{bookScenes.length} 幕
+                      </span>
+                      <label className="muted" style={{ marginLeft: "auto", fontSize: 12 }}>
+                        <input type="checkbox" checked={bookIncludeDone} onChange={(e) => setBookIncludeDone(e.target.checked)} /> 包含已演完的幕
+                      </label>
+                    </div>
+                    <div style={{ maxHeight: 200, overflowY: "auto", fontSize: 13 }}>
+                      {bookScenes.map((n) => (
+                        <label key={n.id} style={{ display: "flex", gap: 6, alignItems: "center", padding: "2px 0" }}>
+                          <input type="checkbox" checked={bookSel.has(n.id)} onChange={() => toggleBookScene(n.id)} />
+                          <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                            {lineageOf(nodes, n.id).map((x) => x.title).join(" › ")}
+                          </span>
+                          {isScenePlayed(n) && <span className="muted">已演完</span>}
+                        </label>
+                      ))}
+                    </div>
+                    <div className="row" style={{ marginTop: 8 }}>
+                      <button className="primary" onClick={buildOutlineBook}>生成剧情世界书</button>
+                    </div>
+                    {renderBookResult()}
+                  </>
+                )}
               </div>
             )}
+          </div>
+
+          {/* ================= 右列：节点编辑器 ================= */}
+          {selected ? (
+            <NodeEditor
+              // revision 进 key：保存后重挂载，草稿态与库内同步
+              key={`${selected.id}:${selected.revision}`}
+              node={selected}
+              characters={characters}
+              busy={busy !== null}
+              pathLabel={selectedPath}
+              moveOptions={moveOptions}
+              onSave={(patch) => saveNode(selected.id, patch)}
+              onStatus={(to) => changeStatus(selected.id, to)}
+              onDelete={() => deleteSubtree(selected)}
+              onMove={(parentId) => applyPlan(selected.id, parentId, "child")}
+            />
+          ) : (
+            <div className="panel">
+              <p className="muted">{loaded ? "点击左侧节点进行编辑；⠿ 拖行柄可改顺序（上/下缘=插为兄弟，中段=成为子级）。" : "正在读取…"}</p>
+            </div>
+          )}
+        </div>
+      ) : (
+        /* ================= 对话创作视图：左聊天右草稿预览 ================= */
+        <div style={{ ...twoCol, gridTemplateColumns: "minmax(360px, 7fr) minmax(300px, 5fr)" }}>
+          <div className="panel">
+            <div className="row" style={{ marginBottom: 6, flexWrap: "wrap" }}>
+              <strong>💬 对话创作</strong>
+              <span className="muted">每轮一问，只谈整体大纲/走向/细纲题目；创作发生在右侧草稿预览里</span>
+            </div>
+            <div style={{ maxHeight: "56vh", overflowY: "auto" }}>
+              {coachMsgs.length === 0 && (
+                <p className="muted">
+                  聊聊你想写什么——AI 每轮问一个关键问题，把答案长成右边的大纲草稿树。
+                  每一轮它都必须真的动草稿，光说"已完成"会被当场戳穿。
+                </p>
+              )}
+              {coachMsgs.map((m, i) => {
+                // 该气泡对应的用户原文（往前找最近一条 user）——「重试本轮」用
+                let prevUserText = "";
+                for (let j = i - 1; j >= 0; j--) {
+                  if (coachMsgs[j].role === "user") {
+                    prevUserText = coachMsgs[j].content;
+                    break;
+                  }
+                }
+                const zeroDiff = m.diff ? isZeroDiff(m.diff) : false;
+                const emptyPromise = m.role === "assistant" && m.claimed === true && zeroDiff;
+                return (
+                  <div
+                    key={i}
+                    style={{ display: "flex", justifyContent: m.role === "user" ? "flex-end" : "flex-start", marginBottom: 8 }}
+                  >
+                    <div
+                      style={{
+                        alignSelf: m.role === "user" ? "flex-end" : "flex-start",
+                        maxWidth: "92%",
+                        whiteSpace: "pre-wrap",
+                        wordBreak: "break-word",
+                        padding: "6px 10px",
+                        borderRadius: 10,
+                        border: "1px solid var(--line)",
+                        background: m.role === "user" ? "var(--accent)" : "var(--panel)",
+                        color: m.role === "user" ? "#fff" : undefined,
+                        fontSize: 13,
+                      }}
+                    >
+                      {m.content}
+                      {m.role === "assistant" && m.diff && (
+                        <div style={{ marginTop: 6, fontSize: 12 }}>
+                          {zeroDiff ? (
+                            <span className="muted">本轮草稿无变更</span>
+                          ) : (
+                            <span>
+                              本轮草稿变化：
+                              <span style={{ color: m.diff.volumes > 0 ? "#2e7d32" : m.diff.volumes < 0 ? "#c62828" : "var(--muted)" }}>
+                                {m.diff.volumes > 0 ? `+${m.diff.volumes}` : m.diff.volumes}卷{" "}
+                              </span>
+                              <span style={{ color: m.diff.chapters > 0 ? "#2e7d32" : m.diff.chapters < 0 ? "#c62828" : "var(--muted)" }}>
+                                {m.diff.chapters > 0 ? `+${m.diff.chapters}` : m.diff.chapters}章{" "}
+                              </span>
+                              <span style={{ color: m.diff.scenes > 0 ? "#2e7d32" : m.diff.scenes < 0 ? "#c62828" : "var(--muted)" }}>
+                                {m.diff.scenes > 0 ? `+${m.diff.scenes}` : m.diff.scenes}幕
+                              </span>
+                            </span>
+                          )}
+                        </div>
+                      )}
+                      {m.role === "assistant" && m.badDraft && (
+                        <div style={{ marginTop: 6, fontSize: 12, color: "#8c2f22" }}>
+                          本轮未返回有效草稿，界面未发生任何创作（草稿保留上一版）。
+                        </div>
+                      )}
+                      {emptyPromise && (
+                        <div style={{ ...warnBox, marginTop: 6, border: "1px solid #d97706" }}>
+                          ⚠ AI 声称完成，但草稿<strong>没有任何变化</strong>——
+                          <button
+                            style={{ marginLeft: 6, padding: "1px 8px", fontSize: 12 }}
+                            disabled={busy !== null || !prevUserText}
+                            onClick={() => void sendCoach(prevUserText)}
+                          >
+                            重试本轮
+                          </button>
+                          或直接在下方纠正它。
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                );
+              })}
+              {busy && <div className="muted" style={{ fontSize: 12 }}>⏳ {busy}中…</div>}
+            </div>
             <label className="field">
               <span>聊聊想法、回答上一问 — Enter 发送，Shift+Enter 换行</span>
               <textarea
@@ -1020,23 +1104,13 @@ export function OutlinePage({ projectId }: { projectId: string }) {
               <button className="primary" onClick={() => void sendCoach()} disabled={!!busy || !coachInput.trim() || !project}>
                 {busy ? "进行中…" : "发送"}
               </button>
-              <button onClick={stop} disabled={!busy}>
-                停止
-              </button>
-              <button onClick={() => void applyCoachDraft()} disabled={!!busy || coachStats.s === 0}>
-                应用到大纲树
-              </button>
-              <button onClick={() => void fillBeats()} disabled={!!busy}>
-                🪄 AI 填充细纲
-              </button>
-              <button onClick={exportDraftBook} disabled={!!busy || coachStats.s === 0}>
-                🥁 导出为世界书
-              </button>
               {coachMsgs.length > 0 && !busy && (
                 <button
                   onClick={() => {
+                    if (!window.confirm("重新开始？将清空本项目的对话与草稿（大纲树已应用的节点不受影响）。")) return;
                     setCoachMsgs([]);
                     setCoachDraft(null);
+                    setBookOut(null);
                   }}
                 >
                   重新开始
@@ -1044,176 +1118,96 @@ export function OutlinePage({ projectId }: { projectId: string }) {
               )}
             </div>
             <p className="muted" style={{ fontSize: 12 }}>
-              访谈只定盘子（节拍恒为空）。之后三选一或全要：「应用到大纲树」把草稿追加为新卷（状态=草案）；
-              「AI 填充细纲」为树上所有空幕批量生成 3~8 拍（先应用再填，可停止可重试）；
-              「导出为世界书」不建树直接把当前草稿导出为剧情推进世界书（幕条目仅含目标与时空）。
+              访谈只定盘子（节拍恒空）。盘子满意后点右侧「应用到大纲树」——弹窗列明细、确认才写入，可顺手为新建的幕生成节拍。
             </p>
           </div>
 
-          <div className="panel">
-            <div className="row" style={{ marginBottom: 8 }}>
-              <strong>大纲树</strong>
-              <span className="muted">{loaded ? `${nodes.length} 个节点` : "读取中…"}</span>
-              <button onClick={() => openAddMenu(null)}>＋ 新卷</button>
-            </div>
-            {addMenu && addMenu.parentId === null ? renderAddForm(null, 0) : null}
-            {loaded && nodes.length === 0 && (
-              <p className="muted">还没有节点：用「生成总纲」批量生成，或「＋ 新卷」手动搭骨架。</p>
-            )}
-            <div style={{ maxHeight: "60vh", overflowY: "auto" }}>{renderTree(null, 0)}</div>
-          </div>
-
-          {/* ---------- 剧情世界书（ST · 幕粒度 · 不绑角色） ---------- */}
-          <div className="panel">
+          {/* 右：草稿只读预览树 */}
+          <div className="panel" style={{ position: "sticky", top: 8 }}>
             <div className="row" style={{ marginBottom: 6 }}>
-              <strong>🥁 剧情世界书（ST）</strong>
-              <span className="muted">{`每幕一条导演指令 · 不绑角色（用 {{char}}/{{user}} 变量）`}</span>
+              <strong>草稿预览</strong>
+              {coachStats.s > 0 && (
+                <span className="muted" style={{ marginLeft: "auto" }}>
+                  {coachStats.v}卷 · {coachStats.c}章 · {coachStats.s}幕
+                </span>
+              )}
             </div>
-            {loaded && bookScenes.length === 0 ? (
-              <p className="muted">还没有「幕」节点：先生成总纲或手动搭建，再回来成书。</p>
+            {coachStats.s === 0 && coachStats.v === 0 ? (
+              <p className="muted">草稿还是空的——聊起来后这里会实时长出大纲树（📚卷 → 📖章 → 🎬幕）。</p>
             ) : (
-              <>
-                <div className="row" style={{ marginBottom: 4, flexWrap: "wrap" }}>
-                  <button onClick={() => setBookSel(new Set(bookScenes.map((n) => n.id)))}>全选</button>
-                  <button onClick={() => setBookSel(new Set())}>清空</button>
-                  <span className="muted">
-                    已选 {bookScenes.filter((n) => bookSel.has(n.id)).length}/{bookScenes.length} 幕
-                  </span>
-                  <label className="row" style={{ gap: 4, fontSize: 13, color: "var(--text)" }}>
-                    <input
-                      type="checkbox"
-                      checked={bookIncludeDone}
-                      onChange={(e) => setBookIncludeDone(e.target.checked)}
-                    />
-                    包含已演完的幕
-                  </label>
-                </div>
-                <div style={{ maxHeight: 190, overflowY: "auto", marginBottom: 8 }}>
-                  {bookScenes.map((n) => {
-                    const path = lineageOf(nodes, n.id)
-                      .filter((x) => x.level !== "scene")
-                      .map((x) => x.title)
-                      .join(" › ");
-                    return (
-                      <label
-                        key={n.id}
-                        className="row"
-                        style={{ gap: 6, fontSize: 13, color: "var(--text)", padding: "2px 0" }}
-                      >
-                        <input type="checkbox" checked={bookSel.has(n.id)} onChange={() => toggleBookScene(n.id)} />
-                        <span>{n.title || "（无名幕）"}</span>
-                        <span className="muted">
-                          {n.beats.length}拍{isScenePlayed(n) ? " · 已演完" : ""}
-                        </span>
-                        <span className="muted" style={{ marginLeft: "auto" }}>
-                          {path}
-                        </span>
-                      </label>
-                    );
-                  })}
-                </div>
-                <button className="primary" onClick={buildOutlineBook}>
-                  🥁 生成世界书
-                </button>
-                {bookOut && (
-                  <div style={{ marginTop: 8 }}>
-                    <pre
-                      style={{
-                        whiteSpace: "pre-wrap",
-                        wordBreak: "break-word",
-                        background: "var(--bg)",
-                        padding: 10,
-                        borderRadius: 8,
-                        fontSize: 12,
-                        margin: 0,
-                        maxHeight: 180,
-                        overflowY: "auto",
-                      }}
-                    >
-                      {`共 ${bookOut.lines.length} 幕成条${bookOut.skippedDone ? `（跳过已演完 ${bookOut.skippedDone} 幕）` : ""}\n${bookOut.lines.join("\n")}`}
-                    </pre>
-                    <div className="row" style={{ marginTop: 6 }}>
-                      <button onClick={() => downloadText(bookOut.fileName, bookOut.json)}>下载</button>
-                      <button onClick={() => void copyBook()}>复制 JSON</button>
+              <div style={{ maxHeight: "48vh", overflowY: "auto", fontSize: 13 }}>
+                {(Array.isArray(coachDraft?.volumes) ? coachDraft?.volumes : []).map((v, vi) => (
+                  <div key={vi} style={{ marginBottom: 6 }}>
+                    <div>
+                      📚 {v?.title?.trim() || `第${vi + 1}卷`}
+                      {v?.intent ? <span className="muted"> — {v.intent}</span> : null}
                     </div>
-                    <p className="muted" style={{ fontSize: 12 }}>
-                      在 ST「世界信息 World Info」面板导入即可整本管理。诚实说明 ST 原生机制：条目命中后 sticky
-                      停留期内无需再命中也会注入，且 AI 演拍时会自己写进触发词、冷却后可能再次命中——所以参数取了
-                      短停留(3)+长冷却(10)、同轮多幕命中时后幕优先，指令文案声明「演出即作废」由模型自律兜底。
-                      真正可靠的「已演退场」发生在场间：复盘标记节拍已演 → 重新生成 → 覆盖导入（书名固定可直接替换旧书）。
-                      指令不定义角色，换任何角色卡都即时可用。
-                    </p>
+                    {(Array.isArray(v?.chapters) ? v.chapters : []).map((c, ci) => (
+                      <div key={ci} style={{ paddingLeft: 18 }}>
+                        <div>
+                          📖 {c?.title?.trim() || `第${ci + 1}章`}
+                          {c?.intent ? <span className="muted"> — {c.intent}</span> : null}
+                        </div>
+                        {(Array.isArray(c?.scenes) ? c.scenes : []).map((s, si) => (
+                          <div key={si} style={{ paddingLeft: 18, color: "var(--muted)" }}>
+                            🎬 {s?.title?.trim() || `第${si + 1}幕`}
+                            {s?.intent ? <span> — {s.intent}</span> : null}
+                          </div>
+                        ))}
+                      </div>
+                    ))}
                   </div>
-                )}
-              </>
-            )}
-          </div>
-
-          {sceneProp && (
-            <div className="panel" style={warnBox}>
-              <strong>🎬 下一幕提案</strong>
-              <p style={{ margin: "6px 0" }}>
-                <b>{sceneProp.title}</b>
-                {sceneProp.intent ? <> — {sceneProp.intent}</> : null}
-              </p>
-              {(sceneProp.location || sceneProp.timepoint || sceneProp.castNames.length > 0) && (
-                <p className="muted" style={{ margin: "4px 0" }}>
-                  {[
-                    sceneProp.location ? `地点：${sceneProp.location}` : "",
-                    sceneProp.timepoint ? `时间：${sceneProp.timepoint}` : "",
-                    sceneProp.castNames.length ? `出场：${sceneProp.castNames.join("、")}` : "",
-                  ]
-                    .filter(Boolean)
-                    .join("｜")}
-                </p>
-              )}
-              {sceneProp.beats.length > 0 && (
-                <ol style={{ margin: "4px 0" }}>
-                  {sceneProp.beats.map((b, i) => (
-                    <li key={i}>{b}</li>
-                  ))}
-                </ol>
-              )}
-              <label className="field">
-                <span>挂载章节（默认：最后一个已上演幕的父章）</span>
-                <select value={mountChapterId} onChange={(e) => setMountChapterId(e.target.value)}>
-                  {chapterOptions.map((ch) => (
-                    <option key={ch.id} value={ch.id}>
-                      {lineageOf(nodes, ch.id).map((x) => x.title).join(" › ")}
-                    </option>
-                  ))}
-                </select>
-              </label>
-              <div className="row" style={{ marginTop: 8 }}>
-                <button className="primary" onClick={() => void createSceneFromProposal()}>
-                  ➕ 创建幕节点
-                </button>
-                <button onClick={() => setSceneProp(null)}>放弃提案</button>
+                ))}
               </div>
+            )}
+            <div className="row" style={{ marginTop: 8, flexWrap: "wrap" }}>
+              <button className="primary" onClick={() => setAppModal(true)} disabled={coachStats.s === 0}>
+                ✅ 应用到大纲树…
+              </button>
+              <button onClick={exportDraftBook} disabled={coachStats.s === 0}>
+                🥁 导出为世界书
+              </button>
             </div>
-          )}
-        </div>
-
-        {/* ================= 右列：节点编辑器 ================= */}
-        {selected ? (
-          <NodeEditor
-            // revision 进 key：保存/应用提案后重挂载，草稿态与库内同步
-            key={`${selected.id}:${selected.revision}`}
-            node={selected}
-            characters={characters}
-            busy={busy !== null}
-            pathLabel={selectedPath}
-            onSave={(patch) => saveNode(selected.id, patch)}
-            onStatus={(to) => changeStatus(selected.id, to)}
-            onDelete={() => deleteSubtree(selected)}
-            onDiscuss={() => runDiscuss(selected)}
-          />
-        ) : (
-          <div className="panel">
-            <p className="muted">{loaded ? "点击左侧节点进行编辑；或用工具栏生成总纲 / 提案下一幕。" : "正在读取…"}</p>
+            {renderBookResult()}
           </div>
-        )}
-      </div>
+        </div>
+      )}
+
+      {/* 「应用到大纲树」一步弹窗：列明细 + 可勾选顺手填节拍；ready 永不自动应用 */}
+      {appModal && (
+        <div
+          onClick={() => setAppModal(false)}
+          style={{
+            position: "fixed",
+            inset: 0,
+            background: "rgba(0,0,0,0.35)",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            zIndex: 50,
+          }}
+        >
+          <div className="panel" onClick={(e) => e.stopPropagation()} style={{ maxWidth: 520, width: "92%", maxHeight: "72vh", overflowY: "auto" }}>
+            <strong>应用到大纲树</strong>
+            <p style={{ fontSize: 13 }}>
+              将追加 <b>{coachStats.v}</b> 卷 / <b>{coachStats.c}</b> 章 / <b>{coachStats.s}</b> 幕（状态=草案，追加为新卷根节点，不动既有节点）。
+            </p>
+            <div className="muted" style={{ fontSize: 12, maxHeight: 160, overflowY: "auto" }}>
+              {(Array.isArray(coachDraft?.volumes) ? coachDraft?.volumes : []).map((v, vi) => (
+                <div key={vi}>📚 {v?.title?.trim() || `第${vi + 1}卷`}</div>
+              ))}
+            </div>
+            <label style={{ display: "flex", gap: 6, alignItems: "center", fontSize: 13, marginTop: 8 }}>
+              <input type="checkbox" checked={fillOnApply} onChange={(e) => setFillOnApply(e.target.checked)} />
+              应用后立即为这些新幕生成节拍（AI 串行，可中途停止，已写入保留）
+            </label>
+            <div className="row" style={{ marginTop: 10 }}>
+              <button className="primary" onClick={() => void applyDraft(fillOnApply)}>确认应用</button>
+              <button onClick={() => setAppModal(false)}>取消</button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -1227,13 +1221,15 @@ interface EditorProps {
   busy: boolean;
   /** 祖先链标题面包屑（不含自身） */
   pathLabel: string;
+  /** 「移动到…」候选上级（已排除自身子树；空=不可移动，如卷） */
+  moveOptions: { id: string; label: string }[];
   onSave: (patch: OutlineNodePatch) => Promise<void>;
   onStatus: (to: OutlineStatus) => Promise<void>;
   onDelete: () => Promise<void>;
-  onDiscuss: () => Promise<DiscussProposal | null>;
+  onMove: (parentId: string) => Promise<void>;
 }
 
-function NodeEditor({ node, characters, busy, pathLabel, onSave, onStatus, onDelete, onDiscuss }: EditorProps) {
+function NodeEditor({ node, characters, busy, pathLabel, moveOptions, onSave, onStatus, onDelete, onMove }: EditorProps) {
   const [title, setTitle] = useState(node.title);
   const [intent, setIntent] = useState(node.intent);
   const [location, setLocation] = useState(node.location ?? "");
@@ -1241,7 +1237,7 @@ function NodeEditor({ node, characters, busy, pathLabel, onSave, onStatus, onDel
   const [cast, setCast] = useState<string[]>(node.cast);
   const [beatsText, setBeatsText] = useState(node.beats.map((b) => b.text).join("\n"));
   const [foreshadows, setForeshadows] = useState<ForeshadowLink[]>(() => node.foreshadows.map((f) => ({ ...f })));
-  const [proposal, setProposal] = useState<DiscussProposal | null>(null);
+  const [moveSel, setMoveSel] = useState(() => moveOptions[0]?.id ?? "");
 
   // ---------- beats 行号对位保存规则 ----------
   // 编辑器是一列纯文本行，落库时按「行号 i」与 node.beats[i] 对位：
@@ -1300,49 +1296,6 @@ function NodeEditor({ node, characters, busy, pathLabel, onSave, onStatus, onDel
     await onDelete();
   }
 
-  // ---------- AI 共写 ----------
-
-  async function discuss() {
-    const p = await onDiscuss();
-    if (p) setProposal(p);
-  }
-
-  async function applyProposal() {
-    if (!proposal) return;
-    const patch: OutlineNodePatch = {};
-    if (proposal.title) patch.title = proposal.title; // 非空才覆盖
-    if (proposal.intent) patch.intent = proposal.intent;
-    // 按文本对位沿用旧节拍：同文保旧 id（done 已演标记不丢——世界书跳过逻辑靠它），
-    // 提案改过/新增的行才发新 id；纯 beatsFromStrings 会全部换新 id 抹掉 done。
-    const byText = new Map(node.beats.map((b) => [b.text.trim(), b]));
-    const seen = new Set<string>();
-    const beats: Beat[] = [];
-    for (const t of proposal.beats) {
-      const text = t.trim();
-      if (!text) continue;
-      const old = !seen.has(text) ? byText.get(text) : undefined;
-      if (old) {
-        seen.add(text);
-        beats.push({ ...old, text });
-      } else {
-        beats.push({ id: repos.uid(), text });
-      }
-    }
-    patch.beats = beats;
-    // 从编辑器当前草稿（foreshadows state）合并，而非陈旧的 node：
-    // 用户未保存的伏笔增删改不能被应用提案静默回滚。
-    patch.foreshadows = [
-      ...foreshadows.filter((f) => f.setup.trim()),
-      ...proposal.foreshadows.map((f) => ({
-        id: repos.uid(),
-        setup: f.setup,
-        payoffIn: f.payoffIn || null,
-        status: "planted" as const, // 提案带入的伏笔一律先标 planted
-      })),
-    ];
-    await onSave(patch); // 保存后 revision+1，key 变化重挂载 → 提案框随之收起
-  }
-
   function toggleCast(id: string, on: boolean) {
     setCast((prev) => (on ? [...prev, id] : prev.filter((x) => x !== id)));
   }
@@ -1389,6 +1342,25 @@ function NodeEditor({ node, characters, busy, pathLabel, onSave, onStatus, onDel
           <input value={timepoint} onChange={(e) => setTimepoint(e.target.value)} />
         </label>
       </div>
+
+      {/* v6：移动到…（改父级；同级排序用树行 ⠿ 拖拽。原生 DnD 不支持触屏，这里是键盘/精确修正兜底） */}
+      {moveOptions.length > 0 && (
+        <div className="row" style={{ marginTop: 6, flexWrap: "wrap", alignItems: "flex-end" }}>
+          <label className="field" style={{ flex: 1, minWidth: 220 }}>
+            <span>移动到…（{LEVEL_NAMES[node.level]}改换上级；换序=改叙事顺序）</span>
+            <select value={moveSel} onChange={(e) => setMoveSel(e.target.value)}>
+              {moveOptions.map((o) => (
+                <option key={o.id} value={o.id}>
+                  {o.label}
+                </option>
+              ))}
+            </select>
+          </label>
+          <button disabled={!moveSel || busy} onClick={() => moveSel && void onMove(moveSel)}>
+            移到这里（末尾）
+          </button>
+        </div>
+      )}
 
       <div style={{ ...fieldStack, marginTop: 8 }}>
         <span>出场人物 cast（来自本作品可用人物 = 自有 ∪「📦 资产」选用）</span>
@@ -1442,56 +1414,9 @@ function NodeEditor({ node, characters, busy, pathLabel, onSave, onStatus, onDel
         <button className="primary" onClick={() => void save()}>
           💾 保存
         </button>
-        <button disabled={busy} onClick={() => void discuss()}>
-          🤝 AI 共写提案
-        </button>
-        {busy && <span className="muted">⏳ AI 进行中…可在左栏点「停止」</span>}
+        {busy && <span className="muted">⏳ AI 进行中…可点顶部「停止」</span>}
         <button onClick={() => void removeSubtree()}>🗑 删除子树</button>
       </div>
-
-      {proposal && (
-        <div style={{ ...warnBox, marginTop: 12 }}>
-          <strong>🤝 AI 共写提案</strong>
-          <p style={{ margin: "6px 0" }}>{proposal.comment || <span className="muted">（无点评）</span>}</p>
-          {proposal.title && (
-            <p style={{ margin: "4px 0" }}>
-              <b>标题：</b>
-              {proposal.title}
-            </p>
-          )}
-          {proposal.intent && (
-            <p style={{ margin: "4px 0" }}>
-              <b>意图：</b>
-              {proposal.intent}
-            </p>
-          )}
-          {proposal.beats.length > 0 ? (
-            <ol style={{ margin: "4px 0" }}>
-              {proposal.beats.map((b, i) => (
-                <li key={i}>{b}</li>
-              ))}
-            </ol>
-          ) : (
-            <p className="muted" style={{ margin: "4px 0" }}>（提案未给节拍；应用后将清空现有节拍）</p>
-          )}
-          {proposal.foreshadows.length > 0 && (
-            <ul style={{ margin: "4px 0" }}>
-              {proposal.foreshadows.map((f, i) => (
-                <li key={i}>
-                  伏笔：{f.setup}
-                  {f.payoffIn ? ` → 预期回收于 ${f.payoffIn}` : ""}
-                </li>
-              ))}
-            </ul>
-          )}
-          <div className="row" style={{ marginTop: 6 }}>
-            <button className="primary" onClick={() => void applyProposal()}>
-              ✅ 应用提案
-            </button>
-            <button onClick={() => setProposal(null)}>忽略</button>
-          </div>
-        </div>
-      )}
     </div>
   );
 }
