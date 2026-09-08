@@ -279,3 +279,129 @@ export function reweaveBeats(node: OutlineNode, recap: RecapResult): Beat[] {
   }
   return out;
 }
+
+// ---------- 拖拽落点计划（UI 排序的纯函数核心，落库走 store/repos.applyMovePlan） ----------
+
+export type DropZone = "before" | "after" | "child";
+
+/**
+ * 一行最小写库改动。parentId 只在「父真的变了」时携带——同组换序不带 parentId，
+ * 让写库波及面最小（repos 侧据此决定 update 哪些列）。
+ */
+export interface MoveUpdate {
+  id: ID;
+  parentId?: ID | null;
+  order: number;
+}
+
+/**
+ * 拖拽落点计划：把 dragId 投到 targetId 这一行的 before/after（=插为该行的同级兄弟，
+ * 新父=该行的 parentId）或 child（=追加为该行的末尾子级）；targetId=null 只允许配
+ * child，语义是追加到根级卷列表末尾。
+ * 返回：{updates}=合法的最小改动集；{error}=给用户直接看的拒绝理由；null=无事可做
+ * （id 悬空、或合法但原地无变化，UI 静默忽略）。
+ * 整组重编号顺带消除 order 平票/空洞，这是设计目的之一。
+ */
+export function moveNodePlan(
+  nodes: OutlineNode[],
+  dragId: ID,
+  targetId: ID | null,
+  zone: DropZone,
+): { updates: MoveUpdate[] } | { error: string } | null {
+  // 空白区只接受「卷 → 新的根级卷」这一种投法
+  if (targetId === null && zone !== "child") {
+    return { error: "空白区只接受把「卷」投为新的根级卷" };
+  }
+  const drag = nodes.find((n) => n.id === dragId);
+  if (!drag) return null;
+  let target: OutlineNode | null = null;
+  if (targetId !== null) {
+    target = nodes.find((n) => n.id === targetId) ?? null;
+    if (!target) return null;
+    // 落点不能是 drag 自身或其子树（subtreeIds 含根自身，一并覆盖 targetId===dragId）
+    if (subtreeIds(nodes, dragId).includes(targetId)) {
+      return { error: "不能拖到自己或自己的子树上" };
+    }
+  }
+  // 新父判定：child → 目标本身（null 目标=根）；before/after → 目标的父
+  const newParentId = zone === "child" ? (target?.id ?? null) : (target?.parentId ?? null);
+  const newParent = newParentId === null ? null : nodes.find((n) => n.id === newParentId) ?? null;
+  if (newParentId !== null && !newParent) return { error: "目标上级不存在" };
+  const bad = validatePlacement(
+    { id: drag.id, level: drag.level },
+    newParent ? { id: newParent.id, level: newParent.level } : null,
+  );
+  if (bad) return { error: bad };
+
+  // 目标组：摘除 drag 后按落点插入 drag（child 与 targetId=null 都是尾插）
+  const dest = childrenOf(nodes, newParentId).filter((n) => n.id !== dragId);
+  if (zone === "before" || zone === "after") {
+    const ti = dest.findIndex((n) => n.id === targetId);
+    dest.splice(ti + (zone === "after" ? 1 : 0), 0, drag);
+  } else {
+    dest.push(drag);
+  }
+
+  const oldParentId = drag.parentId ?? null;
+  const parentChanged = oldParentId !== newParentId;
+  const updates: MoveUpdate[] = [];
+  // 源组 ≠ 目标组时：源组（摘除 drag 后）整组重编号，只 push order 真变化的行
+  if (parentChanged) {
+    childrenOf(nodes, oldParentId)
+      .filter((n) => n.id !== dragId)
+      .forEach((n, i) => {
+        if (n.order !== i) updates.push({ id: n.id, order: i });
+      });
+  }
+  // 目标组整组重编号 0..n-1；非 drag 行只 push order 真变化的
+  let dragOrder = 0;
+  dest.forEach((n, i) => {
+    if (n.id === dragId) {
+      dragOrder = i;
+      return;
+    }
+    if (n.order !== i) updates.push({ id: n.id, order: i });
+  });
+  // drag 自己：父变了或 order 变了才记一条，放 updates 最前；仅父变化时附 parentId
+  if (parentChanged || drag.order !== dragOrder) {
+    updates.unshift(
+      parentChanged
+        ? { id: drag.id, parentId: newParentId, order: dragOrder }
+        : { id: drag.id, order: dragOrder },
+    );
+  }
+  return updates.length ? { updates } : null;
+}
+
+// ---------- 草稿差值（界面核对「本轮草稿真实变化」，防 AI 空口宣称完成） ----------
+
+export interface DraftDiff {
+  volumes: number;
+  chapters: number;
+  scenes: number;
+}
+
+/** 三层节点计数；null / volumes 非数组 / 元素缺 chapters|scenes 一律按 0 容错 */
+function countDraft(d: MasterOutlineJson | null): DraftDiff {
+  const out: DraftDiff = { volumes: 0, chapters: 0, scenes: 0 };
+  const volsRaw = d?.volumes;
+  const vols = Array.isArray(volsRaw) ? volsRaw : [];
+  for (const v of vols) {
+    out.volumes++;
+    const chsRaw = v?.chapters;
+    const chs = Array.isArray(chsRaw) ? chsRaw : [];
+    for (const c of chs) {
+      out.chapters++;
+      const scsRaw = c?.scenes;
+      out.scenes += Array.isArray(scsRaw) ? scsRaw.length : 0;
+    }
+  }
+  return out;
+}
+
+/** next 与 prev 的三层节点总数差值（可为负：删卷/删章即为负数） */
+export function draftDiff(prev: MasterOutlineJson | null, next: MasterOutlineJson | null): DraftDiff {
+  const a = countDraft(prev);
+  const b = countDraft(next);
+  return { volumes: b.volumes - a.volumes, chapters: b.chapters - a.chapters, scenes: b.scenes - a.scenes };
+}

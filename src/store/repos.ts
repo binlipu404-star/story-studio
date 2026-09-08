@@ -10,6 +10,7 @@ import { db } from "./db";
 import { DEFAULT_BIBLE_FIELDS, DEFAULT_LOREBOOK_SETTINGS } from "./templates";
 import { assignLegacyBook, filterVisible, keepBooksEnabled, legacySelection, visibleByBooks } from "../flow/library";
 import { toLoreEntries } from "../st/lorebook"; // 纯逻辑层（解析/装配），无 IO，允许门面复用
+import type { MoveUpdate } from "../flow/outline"; // 纯逻辑层类型（flow/outline 不 import store，无循环依赖）
 import type {
   Character,
   CharacterProfile,
@@ -221,6 +222,26 @@ export async function removeNodeCascade(projectId: ID, id: ID): Promise<void> {
   await db.transaction("rw", db.outlineNodes, async () => {
     const ids = await subtreeIds(projectId, id);
     await db.outlineNodes.bulkDelete(ids);
+  });
+}
+
+/**
+ * 应用 flow/outline.moveNodePlan 的最小改动集（拖拽排序落库）。
+ * 关键纪律：**revision 一律不动**。先例是同文件 setNodeStatus 的注释
+ * 「状态不算内容修订」——排序/换父属于组织性操作而非内容修订；OutlinePage 的
+ * 编辑器用 key=id:revision 重挂载，动 revision 会重挂载右栏编辑器、吞掉用户
+ * 未保存的草稿。parentId 仅在 plan 判定「父真的变了」时才携带（同组换序不带）。
+ */
+export async function applyMovePlan(updates: MoveUpdate[]): Promise<void> {
+  if (updates.length === 0) return;
+  await db.transaction("rw", db.outlineNodes, async () => {
+    for (const row of updates) {
+      await db.outlineNodes.update(row.id, {
+        order: row.order,
+        ...(row.parentId !== undefined ? { parentId: row.parentId } : {}),
+        updatedAt: Date.now(),
+      });
+    }
   });
 }
 

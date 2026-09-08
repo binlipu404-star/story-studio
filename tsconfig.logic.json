@@ -11,6 +11,7 @@
   },
   "include": [
     "src/core/types.ts",
+    "src/core/claims.ts",
     "src/st/**/*.ts",
     "src/flow/**/*.ts",
     "src/ai/json.ts",

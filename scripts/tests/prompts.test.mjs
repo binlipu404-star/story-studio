@@ -8,6 +8,7 @@ import {
   characterBriefBlock,
   interviewMaterialsBlock,
   masterOutlinePrompt,
+  outlineCoachPrompt, // v6 P1 追加：教练词红线断言用
   nodeDiscussPrompt,
   nextScenePrompt,
   trialGreeting,
@@ -170,4 +171,14 @@ export default async function (t) {
   t.eq(beatsToLines([B("甲"), B("乙", true)]), "1. 甲\n2. 乙（已上演）", "beatsToLines 序号与完成标记");
   const dg = nodeDigest(N({}), { withBeats: true });
   t.ok(dg.includes("幕") && dg.includes("细化") && dg.includes("匕首伏笔"), "nodeDigest 含层级/状态/意图");
+
+  // v6 P1 完成式宣称红线（追加断言，不动上方任何现有断言）
+  {
+    const iv6 = interviewSystemPrompt([F({ key: "genre", label: "题材", status: "confirmed", value: "悬疑" })]);
+    t.ok(iv6.includes("禁止"), "v6 访谈红线含「禁止」");
+    t.ok(iv6.includes("提案"), "v6 访谈红线含「提案」（updates 只是提案）");
+    const coach6 = outlineCoachPrompt([], null);
+    t.ok(coach6.includes("全量"), "v6 教练词含「全量」（draft 每轮完整输出）");
+    t.ok(coach6.includes("禁止"), "v6 教练词含「禁止」（防空口宣称）");
+  }
 }
