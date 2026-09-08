@@ -1,6 +1,6 @@
 # Story Studio — 设计说明与自我剖析（审阅版）
 
-> 版本锚点：git HEAD ≥ `ec490f5` 之后的 v4 轮（人物卡/世界书升级为顶层全局资产库 + 规模化 UI 加固，随后 GitHub 公开部署）→ v5 轮（世界书整本书化，schema 零迁移）。src 共 50 个 ts/tsx 文件、约 1.5 万行；逻辑测试基线 **787 断言 / 23 个测试文件**（v4 新增 16 条 flow/library.ts 可见集断言；v5 新增 31 条书制断言 scripts/tests/library-book.test.mjs；真实 PNG 卡不入库，未设 `SS_TEST_PNG` 时 5 条 PNG 断言转为 2 条 skip，即 CI 上 total=782 skipped=2 failed=0）。此前 718→716 的唯一减少来自删除死函数 `rpSystemPrompt` 附带的 2 条其专属断言，属删死代码的合理收缩，非覆盖退化。
+> 版本锚点：git HEAD ≥ `ec490f5` 之后的 v4 轮（人物卡/世界书升级为顶层全局资产库 + 规模化 UI 加固，随后 GitHub 公开部署）→ v5 轮（世界书整本书化，schema 零迁移）→ v6 轮（大纲工作台重构：手动+对话两视图、拖拽排序、反「只说不做」红线，schema 零迁移）。src 共 51 个 ts/tsx 文件、约 1.5 万行；逻辑测试基线 **864 断言 / 25 个测试文件**（v4 新增 16 条 flow/library.ts 可见集断言；v5 新增 31 条书制断言 scripts/tests/library-book.test.mjs；v6 新增 outline-move 46 条 + claims 17 条 + prompts 红线追加断言共 77 条；真实 PNG 卡不入库，未设 `SS_TEST_PNG` 时 5 条 PNG 断言转为 2 条 skip，即 CI 上 total=859 skipped=2 failed=0）。此前 718→716 的唯一减少来自删除死函数 `rpSystemPrompt` 附带的 2 条其专属断言，属删死代码的合理收缩，非覆盖退化。
 > **术语对照**：产品把剧场的长期 RP 单元称为**「剧组」**（旧称「房间」，UI/文档已全量更名）。代码标识符与持久化键**保留 room 词根不动**（`activeRoom`/`queueRoomWrite`/`RPSession.kind:"theater"`/`ledger.roomId`/`prefs.lastRoomId` 等——改持久键需数据迁移，收益低风险高，明确不做）。读到「剧组」↔`room*` 并存即是此决策，不是遗漏。派生动词随隐喻走：开房→**开机**、整房重来→**整组重来**。
 > 本文档面向接手审阅的 AI/工程师。所有陈述均以仓库代码为准，标注了文件与行级线索；第 12 节是自认缺陷清单，请优先审阅该节。
 > 配套文件：`docs/ROADMAP.md`（里程碑史）、`README.md`（入口）、仓库根 `验收清单.md`（人工验收步骤，含 v3.1 手测清单）。
@@ -234,9 +234,9 @@ AI 开放式访谈边谈边长草稿：`interviewSystemPrompt` 要求模型输�
 
 **v3.2 剧场固定注入**：`assembleRoom` 每轮把构思档案的**有值字段**压成 `bibleBlock`（`bibleElementsBlock`：逐字段 160 字截断、总量 1400 字封顶、溢出同序裁尾 + 尾注"计划 vs 实际冲突以实际发生为准"）。作为 `bible` 节进 system（priority 4，位置在 loreBefore 前，理由见 §6.1 表）；剧本组/旁白组/沙盒组三条装配路径全部携带。
 
-### 8.2 大纲（OutlinePage 1497 行——全库最大页面）
+### 8.2 大纲（OutlinePage——v6 重写为「手动编写 / 对话创作」两视图，详见 §8.11）
 
-四级树；`validatePlacement`（level 层级校验：父必须更粗一级）/`canTransition`（状态机）/`preorder`/`lineageOf`/`sceneSequence` 全在 outline.ts。AI 共创三结构（three-act/kishotenketsu/hero）、`masterToNodes` 把 JSON 草稿映射为节点（**每次均铸新 id**，`opts.uid` 注入；返回 `{nodes, warnings, logline}` 供 `bulkAdd` 一次落库，不支持增量再应用）、`treeToMarkdown` 导出。复盘回填：`applyRecapToNode`（节拍命中→done/改文/新增）与 `reweaveBeats`（按实录重织拍）。
+四级树；`validatePlacement`（level 层级校验：父必须更粗一级）/`canTransition`（状态机）/`preorder`/`lineageOf`/`sceneSequence` 全在 outline.ts。`masterToNodes` 把 JSON 草稿映射为节点（**每次均铸新 id**，`opts.uid` 注入；返回 `{nodes, warnings, logline}` 供 `bulkAdd` 一次落库）、`treeToMarkdown` 导出。复盘回填：`applyRecapToNode`（节拍命中→done/改文/新增）与 `reweaveBeats`（按实录重织拍）。v6 新增拖拽排序纯函数 `moveNodePlan` 与草稿差值 `draftDiff`（见 §8.11）；旧「生成总纲/下一幕提案/AI 共写」提示词函数保留但无 UI 消费者（休眠 API）。
 
 ### 8.3 台账闭环（flow/snapshot.ts）
 
@@ -292,11 +292,31 @@ AI 开放式访谈边谈边长草稿：`interviewSystemPrompt` 要求模型输�
 
 **测试**：`library-book.test.mjs` 覆盖 entriesOfBook 保序/悬空、entriesOfBooks 书序拼接、visibleByBooks 兜底尾巴与未迁移回落、assignLegacyBook 幂等、legacySelection 四种来源、keepBooksEnabled 剔除与不改入参、AND 组合；基线 756（含 PNG）/751（无 PNG 2 skip）→ **787/782**。
 
+### 8.11 v6 大纲工作台重构（删繁就简：手动编写 + 对话创作）
+
+**动机（用户原话）**：「现有的通过对话来构建大纲的体验还是不好。删繁就简，仅保留手动编写创作大纲和对话创作大纲的功能。现有的手动编写大纲功能也不完善，不能编辑卷章幕的顺序。」
+
+**页面骨架（OutlinePage 整页重写：1497 → 1422 行）**：删繁就简指**功能面**——4 个 AI 入口砍到 1 个（保留对话创作），换回拖拽排序/草稿预览/持久化/应用弹窗/移动到…等实功能，行数几乎持平。顶层两视图（进度记忆记 `view`）——「✍️ 手动编写」（左树右编辑器）与「💬 对话创作」（整页聊天 + 右侧草稿预览）。删除的旧入口（生成总纲表单/下一幕提案/节点级 AI 共写/独立填充细纲按钮）都是 **页面调用方**删除；`masterOutlinePrompt/nextScenePrompt/nodeDiscussPrompt/sceneBeatsPrompt` 等 **纯函数本体保留**（各有测试断言，删函数=删断言=基线倒退）——无 UI 消费者的导出即"休眠 API"，是"只增不减"家法下的自觉记账。剧情世界书面板不删，收进「⬇ 导出 ▾」菜单（勾幕成书/从草稿成书两功能原样）。
+
+**拖拽排序（本轮核心）**：树行 `⠿` 柄 HTML5 原生 DnD（不引库），三态落点：行上/下缘 25% = before/after（插为该行的兄弟）、中段 50% = child（成为其末子级）、树空白区 = 根级新卷。校验与重排全在纯函数 `flow/outline.moveNodePlan(nodes, dragId, targetId, zone)`（`scripts/tests/outline-move.test.mjs` 46 条锁语义）：validatePlacement + 子树防环 → 返回**最小改动集**，涉及组整体重编号 0..n-1（顺带治愈历史遗留的 order 平票/空洞）。落库走 `repos.applyMovePlan`：单事务逐行 update `order/parentId/updatedAt`，**revision 一律不动**（先例 setNodeStatus；编辑器 `key=id:revision` 重挂载契约——动 revision 会吞掉右栏未保存草稿）。编辑器补「移动到…」下拉（同走 moveNodePlan child 态；触屏/键盘兜底，原生 DnD 不支持触屏）。**不变量**：重编号后 order 组内连续 ⇒ repos.childrenOf（tie createdAt）与 flow.childrenOf（tie id.localeCompare）两实现结果恒等。preorder 即叙事顺序——换序即时改变试跑上一幕/剧场幕序/导出 md，功能本意。
+
+**对话创作视图（体验重做）**：旧病灶=对话历史与草稿不落盘（刷新全丢）、草稿只有一行计数不可见、应用即盲追加。新视图：`coachMsgs`（截尾 60 条/单条 2000 字）与 `coachDraft`（≤200KB）并入既有进度桶（400ms 去抖 + pagehide flush 原样复用）；右侧草稿**只读预览树**每轮刷新（解析失败保留旧版 + 黄条）；「应用到大纲树」= 内联弹窗列明细（N卷/M章/K幕）+ 可勾选「顺手为这些新幕填充节拍」（先写库后 AI、可停、已写入保留）；`ready=true` 只是建议旗标，**永不自动写树**。提示词 `outlineCoachPrompt` 契约（`{reply,phase,ready,draft}`）不动。
+
+### 8.12 反「只说不做」红线（用户硬性要求，对话创作 + 构思访谈两页同批）
+
+**动机（用户原话）**：「给AI强调不要出现只说不做的现象，每一次编写不能只在回答中回答'已生成、已完成'，必须在本界面完成真正的创建与编辑。」光靠提示词恳求不可靠——必须让界面自己长眼睛，AI 的口头承诺可被当场戳穿。
+
+**三层防御（两页同构）**：
+1. **提示词层**：`interviewSystemPrompt` 规则 7（updates 只是**提案**，采纳才入档；**禁止** reply 宣称"已写入/已记录/已填好"；无货要明说"本轮没有提案"）；`outlineCoachPrompt` 草稿纪律（draft 为**全量**累积、每轮必出，纯答疑轮也要原样带上；禁止空口"已生成"而 draft 无变化）。红线由 prompts.test 追加断言锁进基线。
+2. **解析层（不信任模型）**：无有效 draft/无提案 → 明示"界面未发生任何创作"；访谈页 `ready`/大纲页 `ready` 永不触发自动落库。
+3. **可见层（机器可检）**：`core/claims.claimsCompletion(text)`（保守匹配：小句级否定/疑问守卫，"还没有完成/已经写入了吗？"一律放行——宁漏报不误报，claims.test 17 条锁边界）× 每轮真实产出对比 → 空口白话黄条。大纲页靠 `flow/outline.draftDiff(prev,next)` 三层计数差值显示「本轮草稿变化 +N卷+M章+K幕 / 无变更」，宣称词 × 空 diff → 黄条点名 + [重试本轮]；访谈页靠 `proposals` 有无，历史气泡渲染期同样检测（存储格式零改动），黄条带 [重发上一条]（就地取该气泡前最近一条 user 原文）。
+
+
 ---
 
 ## 9. 工程惯例（审阅时请按这些约定判卷）
 
-1. **严格门**：`typecheck`（strict + noUnusedLocals + isolatedModules）→ `test:logic`（build:logic + run-tests，**基线 787 只增不减**）→ `build` → git 提交。每步全绿才许提交，commit message 里带测试数（编年史可查 368→413→…→740→756→787；718→716 是唯一一次经论证的死代码收缩，见版本锚点）。
+1. **严格门**：`typecheck`（strict + noUnusedLocals + isolatedModules）→ `test:logic`（build:logic + run-tests，**基线 864 只增不减**）→ `build` → git 提交。每步全绿才许提交，commit message 里带测试数（编年史可查 368→413→…→756→787→864；718→716 是唯一一次经论证的死代码收缩，见版本锚点）。
 2. **测试微框架**：`scripts/tests/*.test.mjs` 默认导出 `async (t)`，t={ok,eq,skip}；从 `dist-test/` import 编译产物——测的是真实运行代码而非源码副本。无第三方测试库。
 3. **防御式解析**是家法：`parsePrefs/parseHandoff/loadAppConfig/sanitizeDigest/extractJson/parseCardJsonText` 全部"永不抛错，坏数据逐字段回落默认/返回 null"。评审时看到空 catch + 注释是风格而非疏忽（均有注释说明为何可忽略）。
 4. **注释风格**：每文件头部块注释讲"为什么+踩过的坑"（useDefineForClassFields 覆表、IndexedDB 复合键 null、vite EBUSY——vite.config `watch.ignored` 即第三坑的疤痕）。
@@ -347,7 +367,7 @@ AI 开放式访谈边谈边长草稿：`interviewSystemPrompt` 要求模型输�
 
 **结构性债**
 14. 页面巨型化：OutlinePage 1497 / TheaterPage 1105 / TrialPage 944 行；无 ErrorBoundary（任何渲染期异常白屏整页）；无路由（深链不可能）；无组件抽象纪律（内联样式复制粘贴——b56beb2 已把跨页**非 UI** 纯工具收敛到 `core/uiUtils.ts`，内联样式与 Badge 仍按纪律留在页内）。
-15. **React 层零自动化测试**：787 断言全部覆盖非 UI 逻辑；§7.5 的九条写安全不变量里 6-9 条只靠人工验收（`验收清单.md`）。Dexie 层同样无常规测试（仅一次性 fake-indexeddb probe）。
+15. **React 层零自动化测试**：864 断言全部覆盖非 UI 逻辑；§7.5 的九条写安全不变量里 6-9 条只靠人工验收（`验收清单.md`）。Dexie 层同样无常规测试（仅一次性 fake-indexeddb probe）。
 16. 双"生命周期脱离组件"实现（jobBus 与 agentrun）结构相似未收敛；prefs/progress/handoff 三个 localStorage 壳也各自发明了一次 storage() 探测——可提炼但未提炼（有意识：三处校验语义不同，合并收益低于风险）。
 17. **v4 全局库的已知边界**：`listAll*`/可见集全表扫（万级需索引或虚拟化）；`nextUid` 全表扫取号；选用列表读侧悬空容忍但**作品改名/删卡不级联改** OutlineNode.cast 与 RPSession.cast 里的 id（读侧同样容错，语义=历史引用允许悬空）；全局页批量删除按"当前过滤视图"作用——过滤后全选删除与全库删除在按钮文案上区分，但纪律仍是用户自查。项目包导出打包的是**可见集**（含共享自他作品的资产）——ST 通用格式无差别，但"从包里重建全局库"的回灌器尚不存在。
 
@@ -357,7 +377,7 @@ AI 开放式访谈边谈边长草稿：`interviewSystemPrompt` 要求模型输�
 
 ```bash
 npm run typecheck      # 期望 exit 0
-npm run test:logic     # 本机（设 SS_TEST_PNG 指向真实 PNG 卡）期望 total=787 failed=0；CI 无卡时 total=782 skipped=2 failed=0。若你新增测试，只许 >787
+npm run test:logic     # 本机（设 SS_TEST_PNG 指向真实 PNG 卡）期望 total=864 failed=0；CI 无卡时 total=859 skipped=2 failed=0。若你新增测试，只许 >864
 npm run build          # tsc --noEmit && vite build
 npm run test:fixtures  # 用 docs/fixtures 下真实 ST 样本跑解析器
 git log --oneline      # 完整编年史（a186ee4 → b56beb2 → 至今；提交者为 GitHub noreply 邮箱）
