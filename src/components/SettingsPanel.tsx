@@ -27,6 +27,19 @@ function parseNum(raw: string): number | undefined {
   return Number.isFinite(n) ? n : undefined;
 }
 
+/** 保存前去首尾空白（粘贴常带换行/空格）；Key 里混进网址单独警示（401 的头号成因） */
+function sanitizeCfg(c: AppConfig): AppConfig {
+  const clean = (ep: ModelEndpoint): ModelEndpoint => ({
+    ...ep,
+    baseURL: ep.baseURL.trim(),
+    apiKey: ep.apiKey.trim(),
+  });
+  return { ...c, writer: clean(c.writer), analyzer: clean(c.analyzer) };
+}
+function looksLikeUrl(v: string): boolean {
+  return /^https?:\/\//i.test(v);
+}
+
 export function SettingsPanel() {
   const [cfg, setCfg] = useState<AppConfig>(() => loadAppConfig());
   const [msg, setMsg] = useState("");
@@ -46,7 +59,9 @@ export function SettingsPanel() {
 
   function save() {
     try {
-      saveAppConfig(cfg);
+      const next = sanitizeCfg(cfg);
+      setCfg(next);
+      saveAppConfig(next);
       setMsg("已保存");
     } catch (e) {
       setMsg(`保存失败：${errMsg(e)}`);
@@ -57,7 +72,9 @@ export function SettingsPanel() {
     // chat() 读的是 localStorage 里已保存的配置；先把界面上当前输入落盘，
     // 避免「填了但还没点保存 → 报未配置模型名」。
     try {
-      saveAppConfig(cfg);
+      const next = sanitizeCfg(cfg);
+      setCfg(next);
+      saveAppConfig(next);
       setMsg("已保存");
     } catch (e) {
       updateTest(role, { running: false, error: `保存失败：${errMsg(e)}` });
@@ -112,6 +129,11 @@ export function SettingsPanel() {
                   placeholder="https://api.deepseek.com"
                   onChange={(e) => patchEndpoint(role, { baseURL: e.target.value })}
                 />
+                {/^sk-/i.test(ep.baseURL.trim()) && (
+                  <span style={{ color: "#b3261e", fontSize: 12 }}>
+                    这里贴的像是密钥：baseURL 应填网址（如 https://api.deepseek.com，或本地代理 /llm/v1）。
+                  </span>
+                )}
               </label>
               <label className="field">
                 模型
@@ -129,6 +151,12 @@ export function SettingsPanel() {
                   placeholder="sk-..."
                   onChange={(e) => patchEndpoint(role, { apiKey: e.target.value })}
                 />
+                {looksLikeUrl(ep.apiKey.trim()) && (
+                  <span style={{ color: "#b3261e", fontSize: 12 }}>
+                    这里贴的是网址：API Key 应只填密钥（sk-…）。网关把收到的内容当密钥校验，
+                    回显的 "****.com" 就是这串网址的尾巴——这就是 401 的全部原因。
+                  </span>
+                )}
               </label>
               <div className="grid2">
                 <label className="field">
