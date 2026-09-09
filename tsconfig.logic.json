@@ -15,6 +15,7 @@
     "src/st/**/*.ts",
     "src/flow/**/*.ts",
     "src/ai/json.ts",
+    "src/ai/messages.ts",
     "src/ai/tokenizer.ts",
     "src/ai/prompts.ts"
   ]

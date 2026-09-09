@@ -3,6 +3,7 @@ import type { AgentMessage, ToolCall, ToolSpec } from "../flow/agent";
 import { errMsg } from "../core/uiUtils";
 import { loadAppConfig } from "./config";
 import { extractJson } from "./json";
+import { hoistSystemMessages } from "./messages";
 
 /** 模型角色：创作 / 分析（对应 AppConfig 的两个端点槽位） */
 export type ChatRole = "writer" | "analyzer";
@@ -61,7 +62,8 @@ export async function chat(
     },
     body: JSON.stringify({
       model: ep.model,
-      messages,
+      // 严格端点（DeepSeek 官方）要求 system 全部在最前；统一在出网点规范化
+      messages: hoistSystemMessages(messages),
       temperature,
       ...(maxTokens ? { max_tokens: maxTokens } : {}),
       stream: true,
@@ -222,13 +224,18 @@ async function postChatOnce(
   if (!ep.baseURL) throw new Error("未配置 baseURL，请先到设置页填写");
   if (!ep.model) throw new Error("未配置模型名（model），请先到设置页填写");
   const base = ep.baseURL.replace(/\/+$/, "");
+  // 同 chat()：出网点统一把 system 提到最前（严格端点 400 防线）。
+  // body.messages 是调用方塞入的 unknown，这里只在它真是数组时规范化。
+  const bodyOut = Array.isArray(body.messages)
+    ? { ...body, messages: hoistSystemMessages(body.messages as { role: string }[]) }
+    : body;
   const res = await fetch(`${base}/chat/completions`, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
       ...(ep.apiKey ? { Authorization: `Bearer ${ep.apiKey}` } : {}),
     },
-    body: JSON.stringify({ model: ep.model, ...body }),
+    body: JSON.stringify({ model: ep.model, ...bodyOut }),
     ...(signal ? { signal } : {}),
   });
   if (!res.ok) {
