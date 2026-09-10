@@ -276,6 +276,9 @@ export interface RPSession {
   sandbox?: TheaterSandbox; // 自由即兴组：无剧本
   script?: ScriptSnapshot; // 剧本副本（沙盒组=空 scenes）
   progress?: Record<string, "done" | "skipped">; // 副本节拍完成标记（key=ScriptBeatRef.id；永不回写主纲）
+  /** v8-A 手动故事指针：副本 scenes 下标，作者亲指"当前演这一幕"。
+   *  undefined/越界=回落自动推导（按 progress 标记）。不写节拍的剧组以此获得诚实进度。 */
+  scenePointer?: number;
   config?: {
     // 剧组级配置快照（开台时由全局 prefs 落一份；面板可改，切剧组互不污染）
     charId: string; // "" = 旁白无卡

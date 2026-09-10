@@ -1,10 +1,12 @@
-// 剧场剧本副本与推进测试（script.ts：快照/同步检测/进展/副本块/章选/定时）
+// 剧场剧本副本与推进测试（script.ts：快照/同步检测/进展/副本块/章选/定时/v8-A手动指针）
 import {
   buildScriptSnapshot,
   detectMainScriptUpdate,
   describeMainScriptUpdate,
   mergeProgressOnSync,
   storyAdvance,
+  resolveScenePointerIndex,
+  remapPointerOnSync,
   scriptBlock,
   progressMemoText,
   planLedgerCadence,
@@ -95,6 +97,54 @@ export default async function (t) {
     t.eq(progressMemoText(a0), "【进展备忘】第 1/1 幕 · 拍 0/2；下一拍：匕首失踪", "4b. 备忘行含幕/拍/下一拍");
     t.ok(progressMemoText(a1).includes("全部演完"), "4b. 演尽提示");
     t.eq(progressMemoText(storyAdvance(empty, {})), "", "4b. 沙盒无幕 → 空串");
+  }
+
+  // 4c. v8-A 手动故事指针：作者亲指优先、无拍幕不谎报、越界回落
+  {
+    const scenes = [scene(), scene({ id: "s2", title: "第二幕", beats: [] }), scene({ id: "s3", title: "第三幕", beats: [{ id: "b9", text: "收尾" }] })];
+    const snap = buildScriptSnapshot("T", [volume(), chapter(), ...scenes], scenes, 100);
+    // 4c.1 零拍幕不再被谎报成"演完"
+    const a0 = storyAdvance(snap, {});
+    t.eq(a0.scenesDone, 0, "4c1. 零拍幕不计入 scenesDone");
+    t.eq(a0.finished, false, "4c1. 全副本无拍 → 绝不 finished（旧行为：开局谎报演尽）");
+    // 4c.2 指针优先且改变当前幕
+    const p1 = storyAdvance(snap, {}, 1);
+    t.eq(p1.currentSceneIndex, 1, "4c2. 指针=第二幕");
+    t.ok(p1.pointerActive, "4c2. pointerActive 标记");
+    t.ok(p1.nextHint.includes("作者指针"), "4c2. 提示词说明来源=作者指针");
+    t.ok(!p1.finished, "4c2. 指针在中间幕=未完");
+    // 4c.3 指针顶到最后一幕 = finished（且文案区别于自动推导）
+    const pLast = storyAdvance(snap, {}, 2);
+    t.ok(pLast.finished && pLast.currentSceneIndex === 2, "4c3. 指针=末幕 → finished 且末幕");
+    t.ok(pLast.nextHint.includes("作者指针"), "4c3. 尽头提示词说明指针");
+    // 4c.4 越界/非法回落自动推导（=旧行为）
+    const noPtr = storyAdvance(snap, { b9: "done" });
+    t.eq(noPtr.currentSceneIndex, 0, "4c4. 无指针 → 第一幕未演完");
+    t.ok(!storyAdvance(snap, {}, 99).pointerActive, "4c4. 越界指针回落自动推导");
+    t.eq(resolveScenePointerIndex(-1, snap.scenes), null, "4c4. 负数非法");
+    t.eq(resolveScenePointerIndex(1.7, snap.scenes), 1, "4c4. 小数取整");
+    t.eq(resolveScenePointerIndex(NaN, snap.scenes), null, "4c4. NaN 非法");
+    t.eq(resolveScenePointerIndex(undefined, snap.scenes), null, "4c4. 未指=回落");
+    // 4c.5 副本块的 ▶ 标记跟随指针
+    t.ok(scriptBlock(snap, {}, p1, 0, 0).includes("▶ 第二幕"), "4c5. 副本块 ▶ 随指针走");
+    t.ok(scriptBlock(snap, {}, p1, 0, 0).includes("· 第三幕"), "4c5. 零拍幕标 · 而非 ✓");
+    // 4c.6 进展备忘行带指针字样
+    t.ok(progressMemoText(p1).includes("作者指针指向第 2/3 幕"), "4c6. 备忘行含指针标注");
+    t.ok(progressMemoText(p1).includes("本幕无预设节拍"), "4c6. 零拍幕备忘=作者留白");
+    t.ok(progressMemoText(pLast).includes("作者指针停在最后一幕"), "4c6. 尽头备忘区别于自动演尽");
+    t.ok(!progressMemoText(a0).includes("作者指针"), "4c6. 自动推导时不提指针");
+  }
+
+  // 4d. v8-A 同步时指针按幕题重定位
+  {
+    const scenes = [scene(), scene({ id: "s2", title: "第二幕", beats: [] })];
+    const old = buildScriptSnapshot("T", [volume(), chapter(), ...scenes], scenes, 100);
+    const same = buildScriptSnapshot("T", [volume(), chapter(), ...scenes], scenes, 200);
+    t.eq(remapPointerOnSync(1, old.scenes, same.scenes), 1, "4d. 同序=原位");
+    const reordered = buildScriptSnapshot("T", [volume(), chapter(), ...scenes], [scenes[1], scenes[0]], 200);
+    t.eq(remapPointerOnSync(0, old.scenes, reordered.scenes), 1, "4d. 重排=跟幕题走");
+    t.eq(remapPointerOnSync(1, old.scenes, [scenes[0]]), undefined, "4d. 幕被删 → 回落自动");
+    t.eq(remapPointerOnSync(undefined, old.scenes, same.scenes), undefined, "4d. 无指针=不动");
   }
 
   // 5. 副本块注入文本：窗口裁剪 + 完成/跳过/当前 标号

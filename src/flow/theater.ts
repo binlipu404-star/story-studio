@@ -20,16 +20,18 @@ import type {
 import type { RpSetup } from "./rp.js";
 import { buildTrialPack, synthesizeNarratorCard } from "./trialpack.js";
 import { ledgerSnapshot } from "./snapshot.js";
-import { progressMemoText, scriptBlock, snapshotDebt, snapshotDebtText, storyAdvance } from "./script.js";
+import { progressMemoText, resolveScenePointerIndex, scriptBlock, snapshotDebt, snapshotDebtText, storyAdvance } from "./script.js";
 import { bibleElementsBlock, personaPromptBlock } from "../ai/prompts.js";
 import { exportCardV2 } from "../st/card.js";
 
 const EMPTY_SNAP: ScriptSnapshot = { sourceTitle: "", takenAt: 0, nodesUpdatedAt: 0, scenes: [] };
 
-/** 剧组当前该演副本里的哪一幕：第一个未演尽的幕；全尽=最后一幕；沙盒=null */
+/** 剧组当前该演副本里的哪一幕：v8-A 作者手动指针优先；否则第一个未演尽的幕；全尽=最后一幕；沙盒=null */
 export function roomCurrentScene(room: RPSession): ScriptSnapshot["scenes"][number] | null {
   const snap = room.script ?? EMPTY_SNAP;
   if (!snap.scenes.length) return null;
+  const ptr = resolveScenePointerIndex(room.scenePointer, snap.scenes);
+  if (ptr !== null) return snap.scenes[ptr];
   const adv = storyAdvance(snap, room.progress ?? {});
   const i = adv.currentSceneIndex ?? snap.scenes.length - 1;
   return snap.scenes[i];
@@ -82,7 +84,7 @@ export function assembleRoom(input: RoomAssemblyInput): RoomAssembly {
   const cfg = room.config;
   const snap = room.script ?? EMPTY_SNAP;
   const progress = room.progress ?? {};
-  const advance = storyAdvance(snap, progress);
+  const advance = storyAdvance(snap, progress, room.scenePointer);
   const cur = roomCurrentScene(room);
 
   // ---- 台账块（剧组独立正典为核心） ----

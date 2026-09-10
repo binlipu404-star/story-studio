@@ -36,6 +36,7 @@ import {
   describeMainScriptUpdate,
   mergeProgressOnSync,
   planLedgerCadence,
+  remapPointerOnSync,
   roomScope,
   scenesOfChapters,
   storyAdvance,
@@ -45,6 +46,7 @@ import { subscribeOutlineChanged } from "../flow/outlineBus";
 import { assembleRoom, newRoom, roomCurrentScene, roomSort } from "../flow/theater";
 import { loadPrefs, savePrefs } from "../flow/prefs";
 import { subscribeAgentRun, startOrganize, type OrganizeIO } from "../flow/agentrun";
+import { AUTO_MARK_ENABLED } from "../flow/agent";
 import { takeHandoff, putHandoff, type CorrectionHandoff, type TheaterHandoff } from "../flow/handoff";
 import { goTab } from "../flow/nav";
 import { RoomDiskWriter, fsSupported, roomFileName, type FsAutoStatus } from "../flow/fsauto";
@@ -640,8 +642,13 @@ export function TheaterPage() {
         : sceneSequence(nodes);
     const snap = buildScriptSnapshot(project.title, nodes, scenes, Date.now());
     const merged = mergeProgressOnSync(snap, activeRoom.progress);
-    await saveRoom({ script: snap, progress: merged });
-    setNote(`副本已同步主纲（${snap.scenes.length} 幕）；已演标记按节拍 id 保留 ${Object.keys(merged).length} 个。`);
+    // v8-A：副本重排后手动指针按幕题重定位；找不回=回落自动推导（不偷偷指着别的幕）
+    const ptr = remapPointerOnSync(activeRoom.scenePointer, activeRoom.script?.scenes ?? [], snap.scenes);
+    await saveRoom({ script: snap, progress: merged, scenePointer: ptr });
+    setNote(
+      `副本已同步主纲（${snap.scenes.length} 幕）；已演标记按节拍 id 保留 ${Object.keys(merged).length} 个。` +
+        (activeRoom.scenePointer !== undefined ? (ptr !== undefined ? `故事指针已随幕「${snap.scenes[ptr].title}」迁移。` : "⚠ 原指针所指幕已不在副本中，指针回落自动推导。") : ""),
+    );
   };
 
   // 手动标记副本节拍（用户的手 = 合法；agent 的 mark_beat 走同一 progress）
@@ -795,7 +802,7 @@ export function TheaterPage() {
   if (loadError) return <div className="panel">剧场加载失败：{loadError}</div>;
   if (!loaded) return <div className="panel">剧场加载中…</div>;
 
-  const adv = activeRoom ? storyAdvance(activeRoom.script ?? { sourceTitle: "", takenAt: 0, nodesUpdatedAt: 0, scenes: [] }, activeRoom.progress ?? {}) : null;
+  const adv = activeRoom ? storyAdvance(activeRoom.script ?? { sourceTitle: "", takenAt: 0, nodesUpdatedAt: 0, scenes: [] }, activeRoom.progress ?? {}, activeRoom.scenePointer) : null;
 
   return (
     <div style={{ display: "flex", gap: 14, alignItems: "flex-start" }}>
@@ -952,9 +959,26 @@ export function TheaterPage() {
               <b>{activeRoom.name ?? "（未命名）"}</b>
               <span style={{ fontSize: 12, color: "var(--muted)" }}>
                 {project ? `《${project.title}》` : "（作品已删）"} · {assembly.sceneTitle}
-                {adv && !activeRoom.sandbox && adv.scenesTotal > 0 ? ` · 副本进展 幕${(adv.currentSceneIndex ?? adv.scenesTotal - 1) + 1}/${adv.scenesTotal} 拍${adv.beatsDone}/${adv.beatsTotal}` : ""}
-                {adv?.finished ? " · 副本已全部演完" : ""}
+                {adv && !activeRoom.sandbox && adv.scenesTotal > 0
+                  ? ` · ${adv.pointerActive ? "故事指针" : "自动推导"} 幕${(adv.currentSceneIndex ?? adv.scenesTotal - 1) + 1}/${adv.scenesTotal}${adv.beatsTotal > 0 ? ` 拍${adv.beatsDone}/${adv.beatsTotal}` : ""}`
+                  : ""}
+                {adv?.finished ? (adv.pointerActive ? " · 指针至剧本尽头" : " · 副本已全部演完") : ""}
               </span>
+              {!activeRoom.sandbox && activeRoom.script && activeRoom.script.scenes.length > 0 && (
+                <select
+                  style={{ fontSize: 12, maxWidth: 220 }}
+                  value={activeRoom.scenePointer ?? ""}
+                  title="v8-A 手动故事指针：亲指当前演到哪一幕，AI 与提示词都以此为准。选「自动推导」= 回到按节拍标记猜进度。"
+                  onChange={(e) => void saveRoom({ scenePointer: e.target.value === "" ? undefined : Number(e.target.value) })}
+                >
+                  <option value="">故事指针：自动推导</option>
+                  {activeRoom.script.scenes.map((sc, i) => (
+                    <option key={`${sc.nodeId}-${i}`} value={i}>
+                      ▶ 指针 → {i + 1}. {sc.title}
+                    </option>
+                  ))}
+                </select>
+              )}
               {mainUpdated && mainUpdate && (activeRoom.scopeMode ?? "full") === "full" && (
                 <button
                   style={{ borderColor: "var(--accent)" }}
@@ -1006,7 +1030,7 @@ export function TheaterPage() {
                 <label title="打开后，作品级已确认台账会标注「借自作品级台账」注入；剧组自己的正典始终优先">
                   <input type="checkbox" checked={activeRoom.config.borrowProjectLedger} onChange={(e) => setConfig({ borrowProjectLedger: e.target.checked })} /> 借作品级台账
                 </label>
-                <label title="场记 agent：读副本/对进度/标节拍/写本剧组正典。物理上没有任何修改主纲的工具。">
+                <label title="场记 agent：读副本/对进度/写本剧组正典。节拍标记已停用（进度认手动故事指针）。物理上没有任何修改主纲的工具。">
                   <input type="checkbox" checked={activeRoom.config.agentEnabled ?? true} onChange={(e) => setConfig({ agentEnabled: e.target.checked })} /> 场记 agent
                 </label>
                 <label title="{{user}} 形象：用户名即画像名（v3.1-⑤）；切换即换用户名，历史里旧称呼由「用户实名」指令纠口">
@@ -1080,9 +1104,21 @@ export function TheaterPage() {
                 {!activeRoom.sandbox && activeRoom.script && activeRoom.script.scenes.length > 0 && (
                   <div className="panel" style={{ maxHeight: 240, overflowY: "auto", fontSize: 12 }}>
                     <b>剧本副本（只读引用 · 主纲去「作品 › 大纲工作台」改）</b>
-                    {activeRoom.script.scenes.map((sc) => (
+                    {activeRoom.script.scenes.map((sc, i) => {
+                      const isPtr = (activeRoom.scenePointer ?? adv?.currentSceneIndex ?? -1) === i;
+                      return (
                       <div key={`${sc.nodeId}`} style={{ marginTop: 6 }}>
-                        <div style={{ color: "var(--muted)" }}>{sc.path}</div>
+                        <div style={{ display: "flex", gap: 4, alignItems: "center", color: "var(--muted)" }}>
+                          <button
+                            style={{ fontSize: 10, padding: "0 4px", borderColor: isPtr ? "var(--accent)" : undefined, color: isPtr ? "var(--accent)" : undefined }}
+                            title={isPtr ? "故事指针正指着这一幕（点一下=交还自动推导）" : "把故事指针移到这一幕（AI 与提示词都改以它为准）"}
+                            onClick={() => void saveRoom({ scenePointer: isPtr ? undefined : i })}
+                          >
+                            {isPtr ? "▶" : "▷"}
+                          </button>
+                          <span>{sc.path}</span>
+                          {sc.beats.length === 0 && <span style={{ fontSize: 10 }}>（无拍·留白）</span>}
+                        </div>
                         {sc.beats.map((b) => {
                           const st = activeRoom.progress?.[b.id];
                           return (
@@ -1095,7 +1131,8 @@ export function TheaterPage() {
                           );
                         })}
                       </div>
-                    ))}
+                      );
+                    })}
                   </div>
                 )}
 
@@ -1113,7 +1150,9 @@ export function TheaterPage() {
                     </div>
                   )}
                   <div style={{ color: "var(--muted)", marginTop: 4 }}>
-                    工具面：读副本/对进度/标节拍/读正典/写正典——没有任何修改主纲的工具；副本改动永不回写。
+                    {AUTO_MARK_ENABLED
+                      ? "工具面：读副本/对进度/标节拍/读正典/写正典——没有任何修改主纲的工具；副本改动永不回写。"
+                      : "工具面：读副本/对进度/读正典/写正典——节拍标记已停用，故事推进由您在头栏的手动故事指针指认；没有任何修改主纲的工具；副本改动永不回写。"}
                   </div>
                 </div>
 

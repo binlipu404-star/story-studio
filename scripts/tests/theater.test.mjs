@@ -47,7 +47,18 @@ export default async function (t) {
   t.eq(roomCurrentScene(baseRoom({ progress: { b1: "done" } }))?.title, "第二幕", "1. 第一幕完→第二幕");
   t.eq(roomCurrentScene(baseRoom({ progress: { b1: "done", b2: "done" } }))?.title, "第二幕", "1. 演尽=停最后一幕");
   t.eq(roomCurrentScene(baseRoom({ sandbox: true, script: undefined })), null, "1. 沙盒无幕");
+  // 1b. v8-A 手动故事指针：作者指哪演哪（盖过自动推导，含"演尽回落末幕"路径）
+  t.eq(roomCurrentScene(baseRoom({ scenePointer: 1 }))?.title, "第二幕", "1b. 指针=第二幕");
+  t.eq(roomCurrentScene(baseRoom({ progress: { b1: "done", b2: "done" }, scenePointer: 0 }))?.title, "祭坛之夜", "1b. 演尽仍听指针=第一幕（旧行为会锁死末幕）");
+  t.eq(roomCurrentScene(baseRoom({ scenePointer: 9 }))?.title, "祭坛之夜", "1b. 越界指针回落自动推导");
 
+  // 1c. v8-A 装配随指针：greeting/剧本块认作者指的幕
+  {
+    const a = assembleRoom({ room: baseRoom({ scenePointer: 1 }), project, characters: [char], loreEntries: [lore], roomCanon: [], projectCanon: [] });
+    t.eq(a.sceneTitle, "第二幕", "1c. 装配幕=指针幕");
+    t.ok(a.setup.scriptBlock.includes("作者指针停在最后一幕"), "1c. 指针=末幕 → 剧本块备忘=尽头（指针语义）");
+    t.ok(a.greeting.includes("第二幕"), "1c. greeting 随指针换幕");
+  }
   // 2. 剧本组装配：节奏/副本块/台账隔离/greeting
   {
     const a = assembleRoom({ room: baseRoom(), project, characters: [char], loreEntries: [lore], roomCanon: [canon()], projectCanon: [canon({ id: "g9", content: "作品级旧事" })] });

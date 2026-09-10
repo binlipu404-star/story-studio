@@ -1,9 +1,11 @@
-// 场记 agent 纯逻辑测试（agent.ts：SSE 分片累积/七工具执行/权限面/指令块）
+// 场记 agent 纯逻辑测试（agent.ts：SSE 分片累积/工具执行/权限面/指令块）
+// v8-A：自动节拍标记下线（AUTO_MARK_ENABLED=false，只摘线不删码）——断言随开关分支，翻牌即回。
 import {
   createToolCallAccumulator,
   runScriptTool,
   SCRIPT_TOOLS,
   SCRIPT_KIT_DIRECTIVE,
+  AUTO_MARK_ENABLED,
   toolLabel,
 } from "../../dist-test/flow/agent.js";
 
@@ -18,12 +20,19 @@ const snap = {
 };
 
 export default async function (t) {
-  // 1. 工具面 = 恰好 7 个，且没有任何改主纲的能力
+  // 1. 工具面锁定（v8-A：自动标记下线时物理剔除 mark_beat），且没有任何改主纲的能力
   {
     const names = SCRIPT_TOOLS.map((s) => s.function.name);
-    t.eq(names.join(","), "read_outline,get_progress,mark_beat,where_is_story,next_step,read_ledger,append_ledger", "1. 工具面锁定");
+    const want = AUTO_MARK_ENABLED
+      ? "read_outline,get_progress,mark_beat,where_is_story,next_step,read_ledger,append_ledger"
+      : "read_outline,get_progress,where_is_story,next_step,read_ledger,append_ledger";
+    t.eq(names.join(","), want, "1. 工具面锁定（随 AUTO_MARK_ENABLED 开关）");
     t.ok(!names.some((n) => /outline_write|update_node|edit_node|set_status/i.test(n)), "1. 物理无主纲写工具");
     t.ok(SCRIPT_KIT_DIRECTIVE.includes("只作用于剧组副本"), "1. 指令块声明边界");
+    if (!AUTO_MARK_ENABLED) {
+      t.ok(!SCRIPT_KIT_DIRECTIVE.includes("mark_beat"), "1. 下线时指令块不再宣传 mark_beat");
+      t.ok(SCRIPT_KIT_DIRECTIVE.includes("手动故事指针"), "1. 下线时指令块指认新正源");
+    }
   }
 
   // 2. SSE tool_calls 分片累积（首片 id+name，后续 arguments 拼接；多调用按 index）
@@ -46,18 +55,24 @@ export default async function (t) {
     t.eq(bad.result().length, 0, "2. 残片与垃圾不产出");
   }
 
-  // 3. mark_beat：合法/非法/未知 id/副作用回调
+  // 3. mark_beat：上线时=合法/非法/未知 id/副作用回调；下线时=拒止且零副作用
   {
     const marks = [];
     const ctx = { snapshot: snap, progress: {}, canon: [], onMarkBeat: (id, st, note) => marks.push([id, st, note].join("|")) };
-    const ok = runScriptTool(ctx, "mark_beat", '{"beat_id":"b1","status":"done","note":"第12楼演到"}');
-    t.ok(ok.result.includes("已记录") && ok.result.includes("主纲未受影响"), "3. 合法标记+免责说明");
-    t.eq(marks[0], "b1|done|第12楼演到", "3. 副作用回调");
-    const bad = runScriptTool(ctx, "mark_beat", '{"beat_id":"bX","status":"done"}');
-    t.ok(bad.result.includes("副本里没有"), "3. 未知 id 纠错");
-    t.eq(marks.length, 1, "3. 未知 id 不触发副作用");
-    t.ok(runScriptTool(ctx, "mark_beat", "坏JSON").result.includes("不是合法 JSON"), "3. 坏 JSON 容错");
-    t.ok(runScriptTool(ctx, "mark_beat", '{"beat_id":"b1","status":"炸"}').result.includes("不合法"), "3. 非法 status");
+    if (!AUTO_MARK_ENABLED) {
+      const denied = runScriptTool(ctx, "mark_beat", '{"beat_id":"b1","status":"done"}');
+      t.ok(denied.result.includes("停用") && denied.result.includes("故事指针"), "3. 下线 → 拒止并指认指针");
+      t.eq(marks.length, 0, "3. 下线 → 零副作用");
+    } else {
+      const ok = runScriptTool(ctx, "mark_beat", '{"beat_id":"b1","status":"done","note":"第12楼演到"}');
+      t.ok(ok.result.includes("已记录") && ok.result.includes("主纲未受影响"), "3. 合法标记+免责说明");
+      t.eq(marks[0], "b1|done|第12楼演到", "3. 副作用回调");
+      const bad = runScriptTool(ctx, "mark_beat", '{"beat_id":"bX","status":"done"}');
+      t.ok(bad.result.includes("副本里没有"), "3. 未知 id 纠错");
+      t.eq(marks.length, 1, "3. 未知 id 不触发副作用");
+      t.ok(runScriptTool(ctx, "mark_beat", "坏JSON").result.includes("不是合法 JSON"), "3. 坏 JSON 容错");
+      t.ok(runScriptTool(ctx, "mark_beat", '{"beat_id":"b1","status":"炸"}').result.includes("不合法"), "3. 非法 status");
+    }
   }
 
   // 4. 读工具与推进（progress 变化反映到结果）
@@ -71,6 +86,24 @@ export default async function (t) {
     t.ok(runScriptTool(ctx, "where_is_story", "{}").result.includes("幕一"), "4. 位置在幕一");
     t.ok(runScriptTool(ctx, "read_ledger", '{"query":"烧"}').result.includes("A 烧了信"), "4. 台账过滤命中");
     t.ok(runScriptTool(ctx, "read_ledger", '{"query":"不存在的词"}').result.includes("暂无匹配"), "4. 无匹配提示");
+  }
+
+  // 4b. v8-A：ctx.pointer 穿透——where_is_story/next_step 认作者指针
+  {
+    const allDone = { b1: "done", b2: "done", b3: "done" };
+    // 指针指末幕（第 2 幕）→ 尽头语义随指针
+    const atEnd = runScriptTool({ snapshot: snap, progress: allDone, canon: [], pointer: 1 }, "where_is_story", "{}");
+    t.ok(atEnd.result.includes("作者指针") && atEnd.result.includes("幕二"), "4b. 位置=作者指针指认的幕二");
+    const nxtEnd = runScriptTool({ snapshot: snap, progress: allDone, canon: [], pointer: 1 }, "next_step", "{}");
+    t.ok(nxtEnd.result.includes("作者指针停在最后一幕"), "4b. next_step 尽头文案认指针");
+    // 无指针 = 旧自动推导文案（逐字节不变）
+    const auto = runScriptTool({ snapshot: snap, progress: allDone, canon: [] }, "where_is_story", "{}");
+    t.ok(auto.result.includes("所有节拍已标记完成") && !auto.result.includes("作者指针"), "4b. 无指针=旧自动推导文案");
+    const nxtAuto = runScriptTool({ snapshot: snap, progress: allDone, canon: [] }, "next_step", "{}");
+    t.ok(nxtAuto.result.includes("副本节拍已全部标记完成"), "4b. next_step 无指针=旧文案");
+    // 指针指中间幕且有未拍 → 正常"下一拍"语义（此 snap 仅两幕，中间幕=第 0 幕）
+    const mid = runScriptTool({ snapshot: snap, progress: { b1: "done" }, canon: [], pointer: 0 }, "next_step", "{}");
+    t.ok(mid.result.includes("幕一") && mid.result.includes("对质"), "4b. 指针幕的下一拍=该幕未标拍");
   }
 
   // 5. append_ledger 校验与副作用

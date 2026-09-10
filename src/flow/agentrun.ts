@@ -11,7 +11,7 @@
 
 import type { DigestLedgerItem } from "./snapshot.js";
 import type { LedgerRecord, RPSession } from "../core/types";
-import { SCRIPT_KIT_DIRECTIVE, SCRIPT_TOOLS, runScriptTool, toolLabel } from "./agent.js";
+import { AUTO_MARK_ENABLED, SCRIPT_KIT_DIRECTIVE, SCRIPT_TOOLS, runScriptTool, toolLabel } from "./agent.js";
 import { chatJSON, chatTools, ToolsUnsupportedError } from "../ai/client.js";
 import { rollingDigestPrompt } from "../ai/prompts.js";
 import { sanitizeDigest } from "./snapshot.js";
@@ -152,6 +152,7 @@ export async function startOrganize(input: OrganizeInput): Promise<void> {
             snapshot: fresh0.script ?? { sourceTitle: "", takenAt: 0, nodesUpdatedAt: 0, scenes: [] },
             progress: { ...progress },
             canon,
+            pointer: fresh0.scenePointer,
             onMarkBeat: (id, st) => void applyMark(id, st),
             onAppendLedger: (it) => void appendCanon(it),
           },
@@ -167,7 +168,10 @@ export async function startOrganize(input: OrganizeInput): Promise<void> {
         },
         {
           role: "user",
-          content: `请整理下面这段 RP 对话（最近楼层）：核对已演到的节拍并标记，把新发生的事实写入正典。每标一处节拍，正文里说明依据（第几楼的哪句话）。\n\n${turns}`,
+          // v8-A 自动标记下线：只让场记记事实，不再命令它标拍
+          content: AUTO_MARK_ENABLED
+            ? `请整理下面这段 RP 对话（最近楼层）：核对已演到的节拍并标记，把新发生的事实写入正典。每标一处节拍，正文里说明依据（第几楼的哪句话）。\n\n${turns}`
+            : `请整理下面这段 RP 对话（最近楼层）：把对话中确定发生、值得长记的事实写入正典（谁做了什么/什么变成了什么），正文里说明依据（第几楼的哪句话）。剧本推进由作者手动的故事指针决定，你不需要标记节拍。\n\n${turns}`,
         },
       ],
       onStep: (s) => {

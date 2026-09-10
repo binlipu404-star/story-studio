@@ -74,6 +74,22 @@ export function detectMainScriptUpdate(snapshot: ScriptSnapshot, nodes: OutlineN
   return describeMainScriptUpdate(snapshot, nodes).changed;
 }
 
+/**
+ * v8-A 同步副本时的指针重定位：旧指针指的幕按标题在新副本里找同一位置；
+ * 找不到（该幕被删/改名）→ null=回落自动推导。纯函数可测。
+ */
+export function remapPointerOnSync(
+  pointer: number | undefined,
+  oldScenes: ScriptSnapshot["scenes"],
+  newScenes: ScriptSnapshot["scenes"],
+): number | undefined {
+  const i = resolveScenePointerIndex(pointer, oldScenes);
+  if (i === null) return undefined;
+  const title = oldScenes[i].title;
+  const j = newScenes.findIndex((sc) => sc.title === title);
+  return j >= 0 ? j : undefined;
+}
+
 /** 同步副本时保留已有完成标记（按 beatId；主纲重排的孤儿标记自然失效） */
 export function mergeProgressOnSync(
   snapshot: ScriptSnapshot,
@@ -89,39 +105,73 @@ export function mergeProgressOnSync(
 // ---------- 推进状态（场记 agent 的 where_is_story / next_step 数据源） ----------
 
 export interface StoryAdvance {
-  currentSceneIndex: number | null; // 第一个未全完成的幕
+  currentSceneIndex: number | null; // 当前幕（v8-A：优先手动指针，否则=第一个未全完成的幕）
   currentBeatId: string | null; // 该幕第一个未标记节拍
   currentBeatText: string | null;
   scenesDone: number;
   scenesTotal: number;
   beatsDone: number;
   beatsTotal: number;
-  finished: boolean; // 副本全部幕的节拍都有标记
+  /** v8-A 当前幕自己的拍子（备忘行用它：别幕有拍不得掩护本幕的留白） */
+  currentSceneBeatsTotal: number;
+  currentSceneBeatsUndone: number;
+  finished: boolean; // v8-A：有指针=指针顶到最后一幕；无指针=全部幕的节拍都有标记
+  pointerActive: boolean; // v8-A：本结果来自作者手动指针（false=自动推导）
   nextHint: string; // 给模型/面板的一句话
 }
 
-export function storyAdvance(snapshot: ScriptSnapshot, progress: Record<string, "done" | "skipped">): StoryAdvance {
+/**
+ * v8-A 手动故事指针解析：作者亲指的 scenes 下标。
+ * 合法域 [0, scenes.length)；undefined/负数/越界/非法 → null（回落自动推导）。
+ * 纯函数可测。
+ */
+export function resolveScenePointerIndex(pointer: number | undefined, scenes: ScriptSnapshot["scenes"]): number | null {
+  if (typeof pointer !== "number" || !Number.isFinite(pointer)) return null;
+  const i = Math.floor(pointer);
+  if (i < 0 || i >= scenes.length) return null;
+  return i;
+}
+
+/** 一幕"没演完"的判据：有拍→存在未标记拍；零拍幕=永远未完成（v8-A：无拍≠演完，进度交给手动指针） */
+function sceneUndone(sc: ScriptSnapshot["scenes"][number], progress: Record<string, "done" | "skipped">): number {
+  return sc.beats.filter((b) => !progress[b.id]).length;
+}
+
+export function storyAdvance(
+  snapshot: ScriptSnapshot,
+  progress: Record<string, "done" | "skipped">,
+  pointer?: number,
+): StoryAdvance {
   let scenesDone = 0;
   let beatsDone = 0;
   let beatsTotal = 0;
-  let currentSceneIndex: number | null = null;
+  let autoIdx: number | null = null;
   for (let i = 0; i < snapshot.scenes.length; i++) {
     const sc = snapshot.scenes[i];
     beatsTotal += sc.beats.length;
-    const undone = sc.beats.filter((b) => !progress[b.id]);
-    beatsDone += sc.beats.length - undone.length;
-    if (undone.length > 0 && currentSceneIndex === null) currentSceneIndex = i;
-    if (undone.length === 0) scenesDone++;
+    const undone = sceneUndone(sc, progress);
+    beatsDone += sc.beats.length - undone;
+    if (undone > 0 && autoIdx === null) autoIdx = i;
+    // 零拍幕不计入 scenesDone（旧行为会把"没拍"谎报成"演完"）
+    if (sc.beats.length > 0 && undone === 0) scenesDone++;
   }
+  // v8-A 指针优先：作者手指的幕就是当前幕，进度不再凭空猜
+  const pointerIdx = resolveScenePointerIndex(pointer, snapshot.scenes);
+  const currentSceneIndex = pointerIdx ?? autoIdx;
+  const pointerActive = pointerIdx !== null;
   const cur = currentSceneIndex === null ? null : snapshot.scenes[currentSceneIndex];
   const curBeat = cur ? cur.beats.find((b) => !progress[b.id]) ?? null : null;
-  const finished = snapshot.scenes.length > 0 && currentSceneIndex === null;
+  const finished = pointerActive
+    ? pointerIdx === snapshot.scenes.length - 1
+    : snapshot.scenes.length > 0 && autoIdx === null && beatsTotal > 0;
   const nextHint = snapshot.scenes.length === 0
     ? "（沙盒剧组：无剧本，自由即兴）"
     : finished
-      ? "副本内所有节拍已标记完成——剧本已演到副本尽头。"
-      : `当前：第 ${currentSceneIndex! + 1}/${snapshot.scenes.length} 幕「${cur!.title}」（${cur!.path}）` +
-        (curBeat ? `；下一拍：${curBeat.text}` : "");
+      ? pointerActive
+        ? `作者指针停在最后一幕「${cur?.title ?? ""}」——剧本尽头，由作者定夺收尾或续写。`
+        : "副本内所有节拍已标记完成——剧本已演到副本尽头。"
+      : `${pointerActive ? "作者指针指认" : "当前"}：第 ${(currentSceneIndex ?? 0) + 1}/${snapshot.scenes.length} 幕「${cur?.title ?? ""}」（${cur?.path ?? ""}）` +
+        (curBeat ? `；下一拍：${curBeat.text}` : pointerActive ? "；本幕无预设节拍（作者留白：自由演出，推进由作者指针裁决）" : "");
   return {
     currentSceneIndex,
     currentBeatId: curBeat?.id ?? null,
@@ -130,7 +180,10 @@ export function storyAdvance(snapshot: ScriptSnapshot, progress: Record<string, 
     scenesTotal: snapshot.scenes.length,
     beatsDone,
     beatsTotal,
+    currentSceneBeatsTotal: cur?.beats.length ?? 0,
+    currentSceneBeatsUndone: cur ? sceneUndone(cur, progress) : 0,
     finished,
+    pointerActive,
     nextHint,
   };
 }
@@ -156,7 +209,8 @@ export function scriptBlock(
       if (i < cur - before && adv.currentSceneIndex !== null) return;
       if (i > cur + after) return;
     }
-    const mark = sc.beats.every((b) => progress[b.id]) ? "✓" : i === cur ? "▶" : "·";
+    // v8-A：零拍幕不标 ✓（旧写法 every 对空数组恒真，把"没拍"画成"演完"）
+    const mark = sc.beats.length > 0 && sc.beats.every((b) => progress[b.id]) ? "✓" : i === cur ? "▶" : "·";
     lines.push(`${mark} ${sc.title}`);
     for (const b of sc.beats) {
       const p = progress[b.id];
@@ -174,11 +228,17 @@ export function scriptBlock(
  * AI 和用户（副本清单/进展头）看到的始终是最新进度。纯函数可测。
  */
 export function progressMemoText(adv: StoryAdvance): string {
-  if (adv.finished) return "【进展备忘】副本节拍已全部演完（正典以剧组台账为准）。";
+  if (adv.finished) {
+    return adv.pointerActive
+      ? "【进展备忘】作者指针停在最后一幕——剧本尽头（正典以剧组台账为准）。"
+      : "【进展备忘】副本节拍已全部演完（正典以剧组台账为准）。";
+  }
   if (adv.currentSceneIndex === null) return "";
-  const donePart = adv.beatsTotal > 0 ? `拍 ${adv.beatsDone}/${adv.beatsTotal}` : "无拍";
+  const donePart = adv.currentSceneBeatsTotal > 0
+    ? `拍 ${adv.currentSceneBeatsTotal - adv.currentSceneBeatsUndone}/${adv.currentSceneBeatsTotal}`
+    : "本幕无预设节拍（作者留白，自由演出）";
   return (
-    `【进展备忘】第 ${adv.currentSceneIndex + 1}/${adv.scenesTotal} 幕 · ${donePart}` +
+    `【进展备忘】${adv.pointerActive ? "作者指针指向" : ""}第 ${adv.currentSceneIndex + 1}/${adv.scenesTotal} 幕 · ${donePart}` +
     (adv.currentBeatText ? `；下一拍：${adv.currentBeatText}` : "")
   );
 }

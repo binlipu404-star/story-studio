@@ -73,9 +73,14 @@ export function createToolCallAccumulator(): ToolCallAccumulator {
   };
 }
 
-// ---------- 场记的 7 个工具（唯一权限面） ----------
+// ---------- 场记的工具面（唯一权限面） ----------
+//
+// v8-A 手动故事指针上线后，**自动节拍标记整体下线**（用户定案：进度由作者亲手指，
+// AI 标指针留待以后实现）。只摘线不删码：全部旧实现原样留在下面，翻牌即回。
+// false = mark_beat 不进工具面、调用被拒止、指令块不再宣传它。
+export const AUTO_MARK_ENABLED = false;
 
-export const SCRIPT_TOOLS: ToolSpec[] = [
+const SCRIPT_TOOLS_ALL: ToolSpec[] = [
   {
     type: "function",
     function: {
@@ -150,11 +155,21 @@ export const SCRIPT_TOOLS: ToolSpec[] = [
   },
 ];
 
-/** 场记 system 附块（工具使用说明+边界，交给页面拼进对话） */
+/** 场记实际工具面（v8-A：自动标记下线时物理剔除 mark_beat——模型看不见就无从调起）。 */
+export const SCRIPT_TOOLS: ToolSpec[] = AUTO_MARK_ENABLED
+  ? SCRIPT_TOOLS_ALL
+  : SCRIPT_TOOLS_ALL.filter((s) => s.function.name !== "mark_beat");
+
+/** 场记 system 附块（工具使用说明+边界，交给页面拼进对话）。
+ *  v8-A：进度改由作者手动故事指针决定；自动标记下线期间场记只管记事实、不标拍。 */
 export const SCRIPT_KIT_DIRECTIVE = [
-  "你有一个「场记工具包」：read_outline / get_progress / mark_beat / where_is_story / next_step / read_ledger / append_ledger。",
-  "- 依据对话实际内容使用：演到某拍就 mark_beat(done)；确定发生且值得长记的事实 append_ledger；拿不准位置就先 where_is_story。",
-  "- 一切标记只作用于剧组副本；原作大纲由用户在大纲工作台维护，你无权限也无需请求。",
+  AUTO_MARK_ENABLED
+    ? "你有一个「场记工具包」：read_outline / get_progress / mark_beat / where_is_story / next_step / read_ledger / append_ledger。"
+    : "你有一个「场记工具包」：read_outline / get_progress / where_is_story / next_step / read_ledger / append_ledger。",
+  AUTO_MARK_ENABLED
+    ? "- 依据对话实际内容使用：演到某拍就 mark_beat(done)；确定发生且值得长记的事实 append_ledger；拿不准位置就先 where_is_story。"
+    : "- 剧本推进由作者亲手指认（手动故事指针），你不标节拍、不判幕位：把对话中确定发生且值得长记的事实 append_ledger；拿不准位置就先 where_is_story 读局面。",
+  "- 一切标记只作用于剧组副本（正典台账、滚动摘要）；原作大纲由用户在大纲工作台维护，你无权限也无需请求。",
   "- 不要为用工具而用工具：没有新事实/新进展就不调用。",
 ].join("\n");
 
@@ -164,6 +179,8 @@ export interface ScriptCtx {
   snapshot: ScriptSnapshot;
   progress: Record<string, "done" | "skipped">;
   canon: LedgerRecord[]; // confirmed（含作品级借用标记由调用方决定传入范围）
+  /** v8-A 作者手动故事指针（scenes 下标；透传给 storyAdvance） */
+  pointer?: number;
   /** 副作用回调（页面实现：改剧组 progress / 写台账表 / 记活动流） */
   onMarkBeat?: (beatId: string, status: "done" | "skipped" | "unmark", note: string) => void;
   onAppendLedger?: (item: { type: LedgerType; content: string; actors: string[] }) => void;
@@ -193,7 +210,7 @@ export function runScriptTool(ctx: ScriptCtx, name: string, argsJson: string): T
   } catch {
     return { result: "参数不是合法 JSON 对象，请重新调用。" };
   }
-  const adv = storyAdvance(ctx.snapshot, ctx.progress);
+  const adv = storyAdvance(ctx.snapshot, ctx.progress, ctx.pointer);
 
   switch (name) {
     case "read_outline": {
@@ -209,6 +226,9 @@ export function runScriptTool(ctx: ScriptCtx, name: string, argsJson: string): T
           (adv.finished ? "副本已演尽。" : `当前幕序号 ${adv.currentSceneIndex ?? "-"}，下一拍 ${adv.currentBeatId ?? "-"}。`),
       };
     case "mark_beat": {
+      if (!AUTO_MARK_ENABLED) {
+        return { result: "节拍标记已由作者停用：故事推进由作者手动的故事指针决定，你只负责记事实（append_ledger），不要再调用本工具。" };
+      }
       const beatId = typeof args.beat_id === "string" ? args.beat_id.trim() : "";
       const status = args.status;
       const note = typeof args.note === "string" ? args.note.trim() : "";
@@ -223,7 +243,13 @@ export function runScriptTool(ctx: ScriptCtx, name: string, argsJson: string): T
     case "where_is_story":
       return { result: adv.nextHint };
     case "next_step": {
-      if (adv.finished) return { result: "副本节拍已全部标记完成。可以向用户提议：收尾本幕/开新剧组/去大纲工作台续写后续。" };
+      if (adv.finished) {
+        return {
+          result: adv.pointerActive
+            ? `${adv.nextHint}可以向用户提议：收尾本幕/开新剧组/去大纲工作台续写后续。`
+            : "副本节拍已全部标记完成。可以向用户提议：收尾本幕/开新剧组/去大纲工作台续写后续。",
+        };
+      }
       const cur = adv.currentSceneIndex !== null ? ctx.snapshot.scenes[adv.currentSceneIndex] : null;
       return { result: cur ? `当前幕「${cur.title}」（目标：${cur.intent || "未填"}）；下一拍：${adv.currentBeatText ?? "？"}` : "（沙盒剧组：无剧本下一步）" };
     }
