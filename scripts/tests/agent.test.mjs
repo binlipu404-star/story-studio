@@ -24,8 +24,8 @@ export default async function (t) {
   {
     const names = SCRIPT_TOOLS.map((s) => s.function.name);
     const want = AUTO_MARK_ENABLED
-      ? "read_outline,get_progress,mark_beat,where_is_story,next_step,read_ledger,append_ledger"
-      : "read_outline,get_progress,where_is_story,next_step,read_ledger,append_ledger";
+      ? "read_outline,get_progress,mark_beat,where_is_story,set_brief,next_step,read_ledger,append_ledger"
+      : "read_outline,get_progress,where_is_story,set_brief,next_step,read_ledger,append_ledger";
     t.eq(names.join(","), want, "1. 工具面锁定（随 AUTO_MARK_ENABLED 开关）");
     t.ok(!names.some((n) => /outline_write|update_node|edit_node|set_status/i.test(n)), "1. 物理无主纲写工具");
     t.ok(SCRIPT_KIT_DIRECTIVE.includes("只作用于剧组副本"), "1. 指令块声明边界");
@@ -116,6 +116,19 @@ export default async function (t) {
     t.ok(runScriptTool(ctx, "append_ledger", '{"type":"xxx","content":"x"}').result.includes("不合法"), "5. 非法 type");
     t.ok(runScriptTool(ctx, "append_ledger", '{"type":"event","content":"  "}').result.includes("不合法"), "5. 空正文");
     t.eq(added.length, 1, "5. 非法不触发副作用");
+  }
+
+  // 5b. v8-B set_brief：写入/超长截 150/空文拒止/副作用回调
+  {
+    const briefs = [];
+    const ctx = { snapshot: snap, progress: {}, canon: [], onSetBrief: (t) => briefs.push(t) };
+    t.ok(runScriptTool(ctx, "set_brief", '{"text":"薇薇安已起疑，下一拍让她搜査薇薇安的行踪；注意正典：匕首在靴筒"}').result.includes("已更新"), "5b. 合法简报");
+    t.eq(briefs.length, 1, "5b. 副作用一次");
+    runScriptTool(ctx, "set_brief", '{"text":"' + "长".repeat(200) + '"}');
+    t.ok(briefs[1].length === 151 && briefs[1].endsWith("…"), "5b. 200 字截为 150+省略号");
+    t.eq(runScriptTool(ctx, "set_brief", '{"text":"  "}').result.includes("不合法"), true, "5b. 空白简报拒止");
+    t.eq(briefs.length, 2, "5b. 拒止不触发副作用");
+    t.ok(toolLabel("set_brief", { text: "x" }).includes("导演简报"), "5b. 活动流标签");
   }
 
   // 6. 未知工具 / 沙盒

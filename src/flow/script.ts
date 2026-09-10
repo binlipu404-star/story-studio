@@ -27,6 +27,17 @@ export function buildScriptSnapshot(
     }
     return chain.join(" › ");
   };
+  // v8-B 全书任务卡：父链（不含本幕）上有 intent 的层；老消费方读 undefined 自然跳过
+  const byId2 = new Map(nodes.map((x) => [x.id, x] as const));
+  const ancestorsOf = (n: OutlineNode): { title: string; intent: string }[] => {
+    const chain: { title: string; intent: string }[] = [];
+    let cur = n.parentId ? byId2.get(n.parentId) : undefined;
+    while (cur) {
+      if (cur.intent.trim()) chain.unshift({ title: cur.title || "（未命名）", intent: cur.intent.trim() });
+      cur = cur.parentId ? byId2.get(cur.parentId) : undefined;
+    }
+    return chain.length ? chain : [];
+  };
   return {
     sourceTitle,
     takenAt,
@@ -36,6 +47,7 @@ export function buildScriptSnapshot(
       path: pathOf(s),
       title: s.title,
       intent: s.intent,
+      ancestors: ancestorsOf(s),
       beats: s.beats.map((b) => ({ id: b.id, text: b.text })),
       foreshadows: s.foreshadows.map((f) => ({ id: f.id, setup: f.setup })),
     })),
@@ -200,10 +212,15 @@ export function scriptBlock(
   adv: StoryAdvance,
   before = 1,
   after = 2,
+  opts: { withAncestors?: boolean } = {},
 ): string {
   if (!snapshot.scenes.length) return "";
   const cur = adv.currentSceneIndex ?? snapshot.scenes.length - 1;
-  const lines: string[] = [`【剧本副本·${snapshot.sourceTitle}】（剧组只按副本演；标记只影响剧组）`];
+  const lines: string[] = [
+    `【剧本副本·${snapshot.sourceTitle}】（剧组只按副本演；标记只影响剧组）`,
+    // v8-B 免责句：intent=作者计划意图，与演出事实冲突时顺事实（构思档案块同款教训）
+    "（注：「意图」是作者的计划意图，不是必须执行的台词；与已演出事实冲突时以事实为准，顺势演化，勿硬拗回计划。）",
+  ];
   snapshot.scenes.forEach((sc, i) => {
     if (before > 0 || after > 0) {
       if (i < cur - before && adv.currentSceneIndex !== null) return;
@@ -212,6 +229,14 @@ export function scriptBlock(
     // v8-A：零拍幕不标 ✓（旧写法 every 对空数组恒真，把"没拍"画成"演完"）
     const mark = sc.beats.length > 0 && sc.beats.every((b) => progress[b.id]) ? "✓" : i === cur ? "▶" : "·";
     lines.push(`${mark} ${sc.title}`);
+    // v8-B T1-D1：逐幕渲染叙事意图（任务卡不是正文，超 120 字截断）
+    const intent = sc.intent.trim();
+    if (intent) lines.push(`  意图：${intent.length > 120 ? intent.slice(0, 120) + "…" : intent}`);
+    // v8-B 全书任务卡（仅工具读副本时开启；每轮注入的剧本块不带，省 token）
+    if (opts.withAncestors && sc.ancestors && sc.ancestors.length) {
+      const seg = sc.ancestors.map((a) => `${a.title}：${a.intent.length > 80 ? a.intent.slice(0, 80) + "…" : a.intent}`).join(" ┃ ");
+      lines.push(`  全书任务：${seg}`);
+    }
     for (const b of sc.beats) {
       const p = progress[b.id];
       lines.push(`   ${p === "done" ? "[✓]" : p === "skipped" ? "[跳]" : "[ ]"} ${b.text}`);

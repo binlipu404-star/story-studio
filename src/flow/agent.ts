@@ -85,7 +85,7 @@ const SCRIPT_TOOLS_ALL: ToolSpec[] = [
     type: "function",
     function: {
       name: "read_outline",
-      description: "读取剧组剧本副本（幕/节拍/伏笔清单，含完成标记）。副本之外你什么大纲也看不到、改不了。",
+      description: "读取剧组剧本副本（幕/意图/全书任务/节拍/伏笔清单，含完成标记）。副本之外你什么大纲也看不到、改不了。",
       parameters: { type: "object", properties: { scope: { type: "string", enum: ["all", "current"], description: "all=全部副本（可能截断），current=当前幕前后窗口" } } },
     },
   },
@@ -119,6 +119,19 @@ const SCRIPT_TOOLS_ALL: ToolSpec[] = [
       name: "where_is_story",
       description: "一句话回答：剧情现在推进到剧本的哪一步。",
       parameters: { type: "object", properties: {} },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "set_brief",
+      description:
+        "写下「导演简报」：给下一轮续写演员的一段 ≤150 字引导（当前幕的戏剧意图 + 下一拍方向 + 最该照顾的 1~2 条正典事实）。每次整理覆盖上一份；没有值得引导的新走向就别调。",
+      parameters: {
+        type: "object",
+        properties: { text: { type: "string", description: "简报正文（≤150 字，写给演员看的工作指令口吻）" } },
+        required: ["text"],
+      },
     },
   },
   {
@@ -164,11 +177,12 @@ export const SCRIPT_TOOLS: ToolSpec[] = AUTO_MARK_ENABLED
  *  v8-A：进度改由作者手动故事指针决定；自动标记下线期间场记只管记事实、不标拍。 */
 export const SCRIPT_KIT_DIRECTIVE = [
   AUTO_MARK_ENABLED
-    ? "你有一个「场记工具包」：read_outline / get_progress / mark_beat / where_is_story / next_step / read_ledger / append_ledger。"
-    : "你有一个「场记工具包」：read_outline / get_progress / where_is_story / next_step / read_ledger / append_ledger。",
+    ? "你有一个「场记工具包」：read_outline / get_progress / mark_beat / where_is_story / set_brief / next_step / read_ledger / append_ledger。"
+    : "你有一个「场记工具包」：read_outline / get_progress / where_is_story / set_brief / next_step / read_ledger / append_ledger。",
   AUTO_MARK_ENABLED
     ? "- 依据对话实际内容使用：演到某拍就 mark_beat(done)；确定发生且值得长记的事实 append_ledger；拿不准位置就先 where_is_story。"
     : "- 剧本推进由作者亲手指认（手动故事指针），你不标节拍、不判幕位：把对话中确定发生且值得长记的事实 append_ledger；拿不准位置就先 where_is_story 读局面。",
+  "- 每轮整理收尾前，若对话已把剧情推上新台阶，用 set_brief 留一段给演员的导演简报（≤150字：当前幕意图+下一拍方向+最该照顾的正典事实）；剧情原地踏步就不调。",
   "- 一切标记只作用于剧组副本（正典台账、滚动摘要）；原作大纲由用户在大纲工作台维护，你无权限也无需请求。",
   "- 不要为用工具而用工具：没有新事实/新进展就不调用。",
 ].join("\n");
@@ -184,6 +198,8 @@ export interface ScriptCtx {
   /** 副作用回调（页面实现：改剧组 progress / 写台账表 / 记活动流） */
   onMarkBeat?: (beatId: string, status: "done" | "skipped" | "unmark", note: string) => void;
   onAppendLedger?: (item: { type: LedgerType; content: string; actors: string[] }) => void;
+  /** v8-B 导演简报覆盖写（""=清空） */
+  onSetBrief?: (text: string) => void;
 }
 
 export interface ToolOutcome {
@@ -194,6 +210,8 @@ export function toolLabel(name: string, args: Record<string, unknown>): string {
   switch (name) {
     case "mark_beat":
       return `标记节拍 ${String(args.beat_id ?? "?")} → ${String(args.status ?? "?")}`;
+    case "set_brief":
+      return `写导演简报：${String(args.text ?? "").slice(0, 30)}…`;
     case "append_ledger":
       return `记台账：${String(args.content ?? "").slice(0, 40)}`;
     default:
@@ -215,9 +233,10 @@ export function runScriptTool(ctx: ScriptCtx, name: string, argsJson: string): T
   switch (name) {
     case "read_outline": {
       const scope = args.scope === "current" ? "current" : "all";
+      // v8-B：场记读副本带全书任务卡（卷/章 intent；每轮注入的剧本块不带，工具独享）
       const text = scope === "all"
-        ? scriptBlock(ctx.snapshot, ctx.progress, adv, 0, 0)
-        : scriptBlock(ctx.snapshot, ctx.progress, adv, 1, 2);
+        ? scriptBlock(ctx.snapshot, ctx.progress, adv, 0, 0, { withAncestors: true })
+        : scriptBlock(ctx.snapshot, ctx.progress, adv, 1, 2, { withAncestors: true });
       return { result: text || "（沙盒剧组：无剧本副本）" };
     }
     case "get_progress":
@@ -252,6 +271,13 @@ export function runScriptTool(ctx: ScriptCtx, name: string, argsJson: string): T
       }
       const cur = adv.currentSceneIndex !== null ? ctx.snapshot.scenes[adv.currentSceneIndex] : null;
       return { result: cur ? `当前幕「${cur.title}」（目标：${cur.intent || "未填"}）；下一拍：${adv.currentBeatText ?? "？"}` : "（沙盒剧组：无剧本下一步）" };
+    }
+    case "set_brief": {
+      const raw = typeof args.text === "string" ? args.text.trim() : "";
+      if (!raw) return { result: "参数不合法：需要非空 text。" };
+      const text = raw.length > 150 ? raw.slice(0, 150) + "…" : raw;
+      ctx.onSetBrief?.(text);
+      return { result: `导演简报已更新（${text.length} 字），下一轮起随剧本块注入给演员。` };
     }
     case "read_ledger": {
       const query = typeof args.query === "string" ? args.query.trim() : "";

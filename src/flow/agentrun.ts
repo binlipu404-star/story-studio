@@ -124,6 +124,10 @@ export async function startOrganize(input: OrganizeInput): Promise<void> {
     await io.addCanon(fresh, [item]);
     io.onCanonChanged(roomId);
   };
+  // v8-B 导演简报：覆盖写回剧组行（读-改-写走同一条写链，不碰其他字段）
+  const setBrief = async (text: string) => {
+    await io.patchRoom(roomId, { brief: text });
+  };
 
   // 整理用转写：最近 24 条非空消息（tools 主路与降级路共用）
   const transcriptOf = (msgs: typeof fresh0.messages) =>
@@ -155,6 +159,7 @@ export async function startOrganize(input: OrganizeInput): Promise<void> {
             pointer: fresh0.scenePointer,
             onMarkBeat: (id, st) => void applyMark(id, st),
             onAppendLedger: (it) => void appendCanon(it),
+            onSetBrief: (t) => void setBrief(t),
           },
           call.function.name,
           call.function.arguments,
@@ -171,7 +176,7 @@ export async function startOrganize(input: OrganizeInput): Promise<void> {
           // v8-A 自动标记下线：只让场记记事实，不再命令它标拍
           content: AUTO_MARK_ENABLED
             ? `请整理下面这段 RP 对话（最近楼层）：核对已演到的节拍并标记，把新发生的事实写入正典。每标一处节拍，正文里说明依据（第几楼的哪句话）。\n\n${turns}`
-            : `请整理下面这段 RP 对话（最近楼层）：把对话中确定发生、值得长记的事实写入正典（谁做了什么/什么变成了什么），正文里说明依据（第几楼的哪句话）。剧本推进由作者手动的故事指针决定，你不需要标记节拍。\n\n${turns}`,
+            : `请整理下面这段 RP 对话（最近楼层）：\n1. 把对话中确定发生、值得长记的事实写入正典（谁做了什么/什么变成了什么），正文里说明依据（第几楼的哪句话）。\n2. 若剧情已推上新台阶：用 set_brief 留一段 ≤150 字「导演简报」给下一轮的演员（当前幕意图 + 下一拍方向 + 最该照顾的正典事实）。原地踏步就不调。\n\n${turns}`,
         },
       ],
       onStep: (s) => {

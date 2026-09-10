@@ -41,6 +41,21 @@ export default async function (t) {
     t.eq(snap.nodesUpdatedAt, 10, "1. 基准=节点最大 updatedAt");
   }
 
+  // 1b. v8-B 快照祖先任务卡：有 intent 的父链层入 ancestors，幕本身不含；空 intent 不记
+  {
+    const v = volume({ intent: "秩序崩塌" });
+    const c = chapter({ intent: "让薇薇安亲手动摇信念" });
+    const s = scene();
+    const snap = buildScriptSnapshot("T", [v, c, s], [s], 100);
+    t.eq(JSON.stringify(snap.scenes[0].ancestors), JSON.stringify([{ title: "卷一", intent: "秩序崩塌" }, { title: "第一章", intent: "让薇薇安亲手动摇信念" }]), "1b. 祖先自外向内、只含有意图层");
+    const blank = buildScriptSnapshot("T", [volume(), chapter(), s], [s], 100);
+    t.eq(blank.scenes[0].ancestors.length, 0, "1b. 无 intent → 空数组");
+    // 工具读副本渲染全书任务；每轮剧本块默认不带
+    const txt = scriptBlock(snap, {}, storyAdvance(snap, {}), 0, 0, { withAncestors: true });
+    t.ok(txt.includes("全书任务：卷一：秩序崩塌 ┃ 第一章：让薇薇安亲手动摇信念"), "1b. withAncestors 渲染祖先链");
+    t.ok(!scriptBlock(snap, {}, storyAdvance(snap, {})).includes("全书任务"), "1b. 默认（每轮注入）不带祖先段");
+  }
+
   // 2. 主纲变化检测（v7.1-W2：detect 升级为含删幕/新增幕；describe 给明细）
   {
     const snap = buildScriptSnapshot("T", [volume(), chapter(), scene()], [scene()], 100);
@@ -161,6 +176,18 @@ export default async function (t) {
     const win = scriptBlock(snap, { b1: "done", b2: "skipped" }, storyAdvance(snap, { b1: "done", b2: "skipped" }), 0, 2);
     t.ok(!win.includes("祭坛之夜"), "5. 窗口裁剪：当前幕之前 0 幕 → A 消失");
     t.eq(scriptBlock(buildScriptSnapshot("T", [], [], 1), {}, storyAdvance(buildScriptSnapshot("T", [], [], 1), {})), "", "5. 沙盒无块");
+  }
+
+  // 5b. v8-B T1-D1：意图行渲染 + 120 字截断 + 免责句
+  {
+    const sLong = scene({ intent: "长".repeat(200) });
+    const snap = buildScriptSnapshot("T", [volume(), chapter(), scene(), sLong], [scene(), sLong], 100);
+    const txt = scriptBlock(snap, {}, storyAdvance(snap, {}), 0, 0);
+    t.ok(txt.includes("意图：确认背叛"), "5b. 有 intent 就渲染意图行");
+    t.ok(txt.includes("意图：" + "长".repeat(120) + "…") && !txt.includes("长".repeat(121)), "5b. 200 字截 120+省略号");
+    t.ok(txt.includes("计划意图") && txt.includes("以事实为准"), "5b. 头部免责句（计划≠事实，勿硬拗）");
+    const noIntent = buildScriptSnapshot("T", [volume(), chapter(), scene({ intent: "  " })], [scene({ intent: "  " })], 100);
+    t.ok(!scriptBlock(noIntent, {}, storyAdvance(noIntent, {})).includes("意图："), "5b. 空 intent 不渲染空行");
   }
 
   // 6. 楼层定时

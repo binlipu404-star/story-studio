@@ -59,6 +59,16 @@ export default async function (t) {
     t.ok(a.setup.scriptBlock.includes("作者指针停在最后一幕"), "1c. 指针=末幕 → 剧本块备忘=尽头（指针语义）");
     t.ok(a.greeting.includes("第二幕"), "1c. greeting 随指针换幕");
   }
+
+  // 1d. v8-B 导演简报：剧本组随剧本块尾注入；沙盒组走「本幕指引」位；无简报=零污染
+  {
+    const withBrief = assembleRoom({ room: baseRoom({ brief: "薇薇安已起疑：下一拍让她搜查房间" }), project, characters: [char], loreEntries: [lore], roomCanon: [], projectCanon: [] });
+    t.ok(withBrief.setup.scriptBlock.includes("【导演简报·场记留给演员】薇薇安已起疑"), "1d. 简报拼进剧本块尾");
+    const noBrief = assembleRoom({ room: baseRoom(), project, characters: [char], loreEntries: [lore], roomCanon: [], projectCanon: [] });
+    t.ok(!noBrief.setup.scriptBlock.includes("导演简报"), "1d. 无简报不占字");
+    const sandboxBrief = assembleRoom({ room: baseRoom({ sandbox: true, script: undefined, brief: "让海雾带来一个客人" }), project, characters: [], loreEntries: [], roomCanon: [], projectCanon: [] });
+    t.ok(sandboxBrief.setup.systemExtra?.includes("让海雾带来一个客人"), "1d. 沙盒组简报走本幕指引位");
+  }
   // 2. 剧本组装配：节奏/副本块/台账隔离/greeting
   {
     const a = assembleRoom({ room: baseRoom(), project, characters: [char], loreEntries: [lore], roomCanon: [canon()], projectCanon: [canon({ id: "g9", content: "作品级旧事" })] });

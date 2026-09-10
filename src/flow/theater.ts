@@ -133,6 +133,8 @@ export function assembleRoom(input: RoomAssemblyInput): RoomAssembly {
   // ---- 沙盒组：无副本，旁白自由开场 ----
   if (!cur) {
     const greeting = `暮色四合，故事尚未落笔。（自由即兴剧组：没有剧本约束，${uname} 的每个动作都会留下痕迹。）`;
+    // v8-B 沙盒组无剧本块，简报借「本幕指引」位（∞ 优先级）注入
+    const sbBrief = room.brief?.trim() ? `【导演简报·场记留给演员】${room.brief.trim()}` : undefined;
     return {
       setup: {
         charName: "旁白",
@@ -143,6 +145,7 @@ export function assembleRoom(input: RoomAssemblyInput): RoomAssembly {
         userNameHint,
         authorNote: "（自由即兴组：无剧本。保持世界一致，把主动权交给 {{user}}。）",
         ledgerBlock,
+        systemExtra: sbBrief,
         pace: room.pace,
         loreEntries: enabled,
         loreSettings,
@@ -175,7 +178,9 @@ export function assembleRoom(input: RoomAssemblyInput): RoomAssembly {
 
   // 剧本块 + 进展备忘行（场记每楼标进度后，此处每轮自动反映最新进度）
   const memo = progressMemoText(advance);
-  const scriptText = [scriptBlock(snap, progress, advance, 1, 2), memo].filter(Boolean).join("\n");
+  // v8-B 导演简报（场记 set_brief 产物）：末位短变量，随剧本块同进同退
+  const briefLine = room.brief?.trim() ? `【导演简报·场记留给演员】${room.brief.trim()}` : "";
+  const scriptText = [scriptBlock(snap, progress, advance, 1, 2), memo, briefLine].filter(Boolean).join("\n");
 
   let setup: RpSetup;
   if (lead) {

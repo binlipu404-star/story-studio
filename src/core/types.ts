@@ -252,6 +252,9 @@ export interface ScriptSnapshot {
     intent: string;
     beats: ScriptBeatRef[];
     foreshadows: { id: string; setup: string }[];
+    /** v8-B 全书任务卡：自卷到父章的祖先链（不含本幕；intent 为空的层不记）。
+     *  只进场记 read_outline 工具返回，不进每轮 system。老快照无此字段=不渲染（向后兼容）。 */
+    ancestors?: { title: string; intent: string }[];
   }[];
 }
 
@@ -279,6 +282,9 @@ export interface RPSession {
   /** v8-A 手动故事指针：副本 scenes 下标，作者亲指"当前演这一幕"。
    *  undefined/越界=回落自动推导（按 progress 标记）。不写节拍的剧组以此获得诚实进度。 */
   scenePointer?: number;
+  /** v8-B 导演简报：场记整理时经 set_brief 工具写下一段 ≤150 字的续写引导
+   *  （当前幕意图+最该照顾的事实）；装配拼在剧本块尾。空=无简报。 */
+  brief?: string;
   config?: {
     // 剧组级配置快照（开台时由全局 prefs 落一份；面板可改，切剧组互不污染）
     charId: string; // "" = 旁白无卡

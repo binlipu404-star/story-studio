@@ -1149,10 +1149,20 @@ export function TheaterPage() {
                       {agentSteps.join("\n")}
                     </div>
                   )}
+                  {activeRoom.brief ? (
+                    <div style={{ marginTop: 6, borderLeft: "3px solid var(--accent)", paddingLeft: 6 }}>
+                      <b>导演简报</b>
+                      <span className="muted">（场记整理时更新，随剧本块注入给演员）</span>
+                      <div style={{ whiteSpace: "pre-wrap" }}>{activeRoom.brief}</div>
+                      <button style={{ fontSize: 10, marginTop: 2 }} onClick={() => void saveRoom({ brief: undefined })}>清空</button>
+                    </div>
+                  ) : (
+                    <div style={{ color: "var(--muted)", marginTop: 4 }}>导演简报：（暂无——场记整理发现新走向时会写一份）</div>
+                  )}
                   <div style={{ color: "var(--muted)", marginTop: 4 }}>
                     {AUTO_MARK_ENABLED
-                      ? "工具面：读副本/对进度/标节拍/读正典/写正典——没有任何修改主纲的工具；副本改动永不回写。"
-                      : "工具面：读副本/对进度/读正典/写正典——节拍标记已停用，故事推进由您在头栏的手动故事指针指认；没有任何修改主纲的工具；副本改动永不回写。"}
+                      ? "工具面：读副本/对进度/标节拍/读正典/写正典/写简报——没有任何修改主纲的工具；副本改动永不回写。"
+                      : "工具面：读副本/对进度/读正典/写正典/写简报——节拍标记已停用，故事推进由您在头栏的手动故事指针指认；没有任何修改主纲的工具；副本改动永不回写。"}
                   </div>
                 </div>
 
