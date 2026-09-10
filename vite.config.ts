@@ -20,8 +20,15 @@ export default defineConfig(({ mode }) => {
     server: {
       watch: {
         // 只关注输入：dist 是构建产物；scripts/ 下有 Node 测试与编辑工具的原子写临时文件，
-        // 曾以 EBUSY 撞崩 vite 的 FSWatcher（Windows）。
-        ignored: ["**/dist/**", "**/dist-test/**", "**/scripts/**", "**/.*tmpdir/**"],
+        // 曾以 EBUSY 撞崩 vite 的 FSWatcher（Windows）；src-tauri/target 是 cargo 编译
+        // 产物（cargo check 时 exe 被占用，同样 EBUSY 崩 vite），一律不进 watch。
+        ignored: [
+          "**/dist/**",
+          "**/dist-test/**",
+          "**/scripts/**",
+          "**/.*tmpdir/**",
+          "**/src-tauri/**",
+        ],
       },
       ...(proxyTarget
         ? {

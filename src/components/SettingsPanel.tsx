@@ -1,4 +1,4 @@
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { AppConfig, ModelEndpoint } from "../core/types";
 import { loadAppConfig, saveAppConfig } from "../ai/config";
 import {
@@ -15,6 +15,7 @@ import { chat, type ChatRole } from "../ai/client";
 import { clearAllProgress } from "../flow/progress";
 import { clearPrefs } from "../flow/prefs";
 import { errMsg, downloadText } from "../core/uiUtils";
+import { getProxyPort, isTauri, toProxyUrl } from "../tauriBridge";
 import { db } from "../store/db";
 import {
   TABLE_NAMES,
@@ -75,6 +76,14 @@ export function SettingsPanel() {
   const [transferMsg, setTransferMsg] = useState("");
   const [transferBusy, setTransferBusy] = useState(false);
   const importFileRef = useRef<HTMLInputElement | null>(null);
+  // 桌面壳（v7-A2）：isTauri 才显桌面面板；代理端口经 proxy_port 命令取（0=未就绪）
+  const [inShell, setInShell] = useState(false);
+  const [proxyPort, setProxyPort] = useState(0);
+  useEffect(() => {
+    if (!isTauri()) return;
+    setInShell(true);
+    void getProxyPort().then(setProxyPort);
+  }, []);
 
   function patchEndpoint(role: ChatRole, patch: Partial<ModelEndpoint>) {
     setCfg((c) => ({ ...c, [role]: { ...c[role], ...patch } }));
@@ -136,6 +145,21 @@ export function SettingsPanel() {
     } catch (e) {
       setMsg(`预设删除失败：${errMsg(e)}`);
     }
+  }
+
+  /** 壳内一键：把两槽位的 baseURL 转成本地代理前缀形态（CORS 根治） */
+  async function fillProxyUrls() {
+    const port = await getProxyPort();
+    if (!port) {
+      setMsg("本地代理未就绪（proxy_port=0），请先重启应用");
+      return;
+    }
+    setCfg((c) => ({
+      ...c,
+      writer: { ...c.writer, baseURL: toProxyUrl(c.writer.baseURL, port) },
+      analyzer: { ...c.analyzer, baseURL: toProxyUrl(c.analyzer.baseURL, port) },
+    }));
+    setMsg(`已填入本地代理前缀（:${port}）——点「保存设置」生效`);
   }
 
   // ---------- 全库转储 / 恢复（v7-A3）：db 表句柄即 TableLike（结构满足） ----------
@@ -256,6 +280,27 @@ export function SettingsPanel() {
         </span>
         {msg && <span style={{ color: "var(--accent)" }}>{msg}</span>}
       </div>
+
+      {/* ---------- 桌面壳（仅桌面版显示）：本地代理一键接入 ---------- */}
+      {inShell && (
+        <div className="panel">
+          <h3 style={{ marginTop: 0 }}>🖥 桌面版</h3>
+          <div className="row" style={{ alignItems: "center", flexWrap: "wrap" }}>
+            <span className="muted">
+              本地代理：
+              {proxyPort > 0 ? (
+                <code>http://127.0.0.1:{proxyPort}/proxy/&lt;scheme&gt;/&lt;host&gt;/…</code>
+              ) : (
+                "未就绪"
+              )}
+              （绕开浏览器跨域限制，任意 OpenAI 兼容网关直通）
+            </span>
+            <button className="primary" disabled={proxyPort === 0} onClick={() => void fillProxyUrls()}>
+              一键把下方 baseURL 改为走本地代理
+            </button>
+          </div>
+        </div>
+      )}
 
       {/* ---------- 预设：多套 URL/模型/Key 命名快照，选一条整体切换 ---------- */}
       <div className="panel">

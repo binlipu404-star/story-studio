@@ -25,5 +25,13 @@ tauri = { version = "2.11.3", features = [] }
 tauri-plugin-log = "2"
 tauri-plugin-single-instance = "2"
 tauri-plugin-window-state = "2"
-# A2 追加本地代理依赖时 TLS 用 reqwest 默认 native-tls（Windows=Schannel，
-# 免 C 编译链），不用 rustls/ring——实测 ring 的 build-script exe 会被杀软拦。
+# ---- V7-A2 本地 CORS 代理（仅监听 127.0.0.1 动态端口）----
+# TLS 用 reqwest 默认 native-tls（Windows=Schannel）：不用 rustls/ring，
+# 实测 ring 的 build-script exe 会被杀软拦（os error 5）。
+hyper = { version = "1", features = ["server", "http1"] }
+hyper-util = { version = "0.1", features = ["tokio", "service", "server", "client-legacy"] }
+http-body-util = "0.1"
+bytes = "1"
+futures-util = "0.3"
+reqwest = { version = "0.12", features = ["stream"] }
+tokio = { version = "1", features = ["rt", "rt-multi-thread", "net", "io-util", "sync"] }
