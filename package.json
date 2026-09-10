@@ -1,7 +1,7 @@
 {
   "name": "story-studio",
   "private": true,
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "AI 互动小说创作工具：构思访谈 → 总纲/细纲 → 试跑 → 台账",
   "type": "module",
   "scripts": {
