@@ -1,6 +1,16 @@
 import { useState } from "react";
 import type { AppConfig, ModelEndpoint } from "../core/types";
 import { loadAppConfig, saveAppConfig } from "../ai/config";
+import {
+  applyPreset,
+  loadPresets,
+  matchesConfig,
+  overwritePreset,
+  removePreset,
+  savePresets,
+  upsertPreset,
+  type AiPreset,
+} from "../ai/presets";
 import { chat, type ChatRole } from "../ai/client";
 import { clearAllProgress } from "../flow/progress";
 import { clearPrefs } from "../flow/prefs";
@@ -48,9 +58,71 @@ export function SettingsPanel() {
     writer: IDLE_TEST,
     analyzer: IDLE_TEST,
   });
+  // 预设（v6.2）：多套 URL/模型/Key 命名快照，选一条 = 整体覆盖生效配置。
+  const [presets, setPresets] = useState<AiPreset[]>(() => loadPresets());
+  const [presetSel, setPresetSel] = useState("");
+  const [presetName, setPresetName] = useState("");
 
   function patchEndpoint(role: ChatRole, patch: Partial<ModelEndpoint>) {
     setCfg((c) => ({ ...c, [role]: { ...c[role], ...patch } }));
+  }
+
+  // ---------- 预设操作（v6.2）：桶写失败一律上抛给 msg，不静默吞 ----------
+
+  /** 存为预设：用当前界面值（先 sanitize），同名=覆盖内容；成功后选中它 */
+  function presetSave() {
+    try {
+      const snap = sanitizeCfg(cfg);
+      const next = upsertPreset(presets, presetName, snap);
+      savePresets(next);
+      setPresets(next);
+      const hit = next.find((p) => p.name === presetName.trim());
+      if (hit) setPresetSel(hit.id);
+      setPresetName("");
+      setMsg(`已存为预设「${hit?.name ?? presetName.trim()}」`);
+    } catch (e) {
+      setMsg(`预设保存失败：${errMsg(e)}`);
+    }
+  }
+
+  /** 用当前生效配置盖掉选中预设的内容（名字不动） */
+  function presetOverwrite() {
+    if (!presetSel) return;
+    try {
+      const next = overwritePreset(presets, presetSel, sanitizeCfg(cfg));
+      savePresets(next);
+      setPresets(next);
+      setMsg("已用当前设置覆盖该预设");
+    } catch (e) {
+      setMsg(`预设覆盖失败：${errMsg(e)}`);
+    }
+  }
+
+  /** 应用预设：整体覆盖生效配置（创作+分析两槽一起换），界面立即同步 */
+  function presetApply() {
+    const hit = presets.find((p) => p.id === presetSel);
+    if (!hit) return;
+    try {
+      setCfg(applyPreset(hit));
+      setMsg(`已启用预设「${hit.name}」（两槽位整体切换，立即生效）`);
+    } catch (e) {
+      setMsg(`预设应用失败：${errMsg(e)}`);
+    }
+  }
+
+  function presetDelete() {
+    const hit = presets.find((p) => p.id === presetSel);
+    if (!hit) return;
+    if (!window.confirm(`删除预设「${hit.name}」？`)) return;
+    try {
+      const next = removePreset(presets, presetSel);
+      savePresets(next);
+      setPresets(next);
+      setPresetSel("");
+      setMsg("已删除该预设");
+    } catch (e) {
+      setMsg(`预设删除失败：${errMsg(e)}`);
+    }
   }
 
   function updateTest(role: ChatRole, patch: Partial<TestState>) {
@@ -113,6 +185,53 @@ export function SettingsPanel() {
         </span>
         {msg && <span style={{ color: "var(--accent)" }}>{msg}</span>}
       </div>
+
+      {/* ---------- 预设：多套 URL/模型/Key 命名快照，选一条整体切换 ---------- */}
+      <div className="panel">
+        <h3 style={{ marginTop: 0 }}>预设 <span className="muted">（多套端点配置一键切换：URL + 模型 + Key，创作/分析两槽一起存、一起换）</span></h3>
+        <div className="row" style={{ flexWrap: "wrap", alignItems: "flex-end" }}>
+          <label className="field" style={{ flex: 1, minWidth: 220 }}>
+            选用预设
+            <select value={presetSel} onChange={(e) => setPresetSel(e.target.value)}>
+              <option value="">— 不使用 —</option>
+              {presets.map((p) => (
+                <option key={p.id} value={p.id}>
+                  {p.name}
+                  {matchesConfig(p, cfg) ? "（使用中）" : ""}
+                  {` · ${p.cfg.writer.model || "未填模型"}`}
+                </option>
+              ))}
+            </select>
+          </label>
+          <button className="primary" disabled={!presetSel} onClick={presetApply}>
+            ▶ 启用
+          </button>
+          <button disabled={!presetSel} onClick={presetOverwrite} title="把下方当前的 URL/模型/Key 写回这条预设（名字不变）">
+            ⤓ 用当前设置覆盖
+          </button>
+          <button disabled={!presetSel} onClick={presetDelete}>
+            🗑 删除
+          </button>
+        </div>
+        <div className="row" style={{ marginTop: 8, flexWrap: "wrap", alignItems: "flex-end" }}>
+          <label className="field" style={{ flex: 1, minWidth: 220 }}>
+            把当前设置存为新预设
+            <input
+              value={presetName}
+              placeholder="如：DeepSeek 官方 / sub2api 代理 / GLM"
+              onChange={(e) => setPresetName(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter" && presetName.trim()) presetSave();
+              }}
+            />
+          </label>
+          <button onClick={presetSave} disabled={!presetName.trim()}>
+            ＋ 存为预设
+          </button>
+          <span className="muted" style={{ fontSize: 12 }}>同名=覆盖该预设内容。Key 只存本浏览器。</span>
+        </div>
+      </div>
+
       <div className="grid2" style={{ alignItems: "start" }}>
         {ROLES.map(({ role, label, hint }) => {
           const ep = cfg[role];

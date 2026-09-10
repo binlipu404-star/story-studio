@@ -24,8 +24,8 @@ function optNum(v: unknown): number | undefined {
   return typeof v === "number" && Number.isFinite(v) ? v : undefined;
 }
 
-/** 宽容地把任意 unknown 规整成 ModelEndpoint（坏字段逐次回落到默认值） */
-function toEndpoint(v: unknown): ModelEndpoint {
+/** 宽容地把任意 unknown 规整成 ModelEndpoint（坏字段逐次回落到默认值）；导出供预设桶复用同一规整规则 */
+export function toEndpoint(v: unknown): ModelEndpoint {
   const src = (v && typeof v === "object" ? v : {}) as Record<string, unknown>;
   const ep: ModelEndpoint = {
     baseURL: str(src.baseURL, DEFAULT_BASE_URL) || DEFAULT_BASE_URL,
