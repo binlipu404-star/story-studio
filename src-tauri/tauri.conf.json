@@ -1,7 +1,7 @@
 {
   "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
   "productName": "Story Studio",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "identifier": "town.cafero.storystudio",
   "build": {
     "frontendDist": "../dist",
