@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useRef, useState } from "react";
 import type { AppConfig, ModelEndpoint } from "../core/types";
 import { loadAppConfig, saveAppConfig } from "../ai/config";
 import {
@@ -14,7 +14,16 @@ import {
 import { chat, type ChatRole } from "../ai/client";
 import { clearAllProgress } from "../flow/progress";
 import { clearPrefs } from "../flow/prefs";
-import { errMsg } from "../core/uiUtils";
+import { errMsg, downloadText } from "../core/uiUtils";
+import { db } from "../store/db";
+import {
+  TABLE_NAMES,
+  dumpAll,
+  dumpToJson,
+  parseDumpJson,
+  restoreDump,
+  type TableMap,
+} from "../flow/transfer";
 
 interface TestState {
   running: boolean;
@@ -62,6 +71,10 @@ export function SettingsPanel() {
   const [presets, setPresets] = useState<AiPreset[]>(() => loadPresets());
   const [presetSel, setPresetSel] = useState("");
   const [presetName, setPresetName] = useState("");
+  // 全库转储/恢复（v7-A3 迁移桥）：浏览器↔桌面壳之间搬书稿的唯一官方通道
+  const [transferMsg, setTransferMsg] = useState("");
+  const [transferBusy, setTransferBusy] = useState(false);
+  const importFileRef = useRef<HTMLInputElement | null>(null);
 
   function patchEndpoint(role: ChatRole, patch: Partial<ModelEndpoint>) {
     setCfg((c) => ({ ...c, [role]: { ...c[role], ...patch } }));
@@ -122,6 +135,64 @@ export function SettingsPanel() {
       setMsg("已删除该预设");
     } catch (e) {
       setMsg(`预设删除失败：${errMsg(e)}`);
+    }
+  }
+
+  // ---------- 全库转储 / 恢复（v7-A3）：db 表句柄即 TableLike（结构满足） ----------
+
+  const tableMap = db as unknown as TableMap;
+
+  async function exportDump() {
+    setTransferBusy(true);
+    setTransferMsg("");
+    try {
+      const dump = await dumpAll(tableMap, db.verno);
+      const text = dumpToJson(dump);
+      const stamp = new Date().toISOString().slice(0, 10);
+      downloadText(`story-studio-全库转储-${stamp}.json`, text);
+      const v = countsSummary(dump.tables);
+      setTransferMsg(`已导出全库转储（${v}，${(text.length / 1024).toFixed(0)} KB）——文件在浏览器下载目录。`);
+    } catch (e) {
+      setTransferMsg(`导出失败：${errMsg(e)}`);
+    } finally {
+      setTransferBusy(false);
+    }
+  }
+
+  /** 展示串：非空表的「表名×行数」清单（全空就是空库）；行数与计数两种来源都吃 */
+  function countsSummary(src: Record<string, unknown[] | number>): string {
+    const parts = TABLE_NAMES.map((n) => {
+      const v = src[n];
+      const c = Array.isArray(v) ? v.length : typeof v === "number" ? v : 0;
+      return c > 0 ? `${n}×${c}` : "";
+    }).filter(Boolean);
+    return parts.length ? parts.join(" ") : "空库";
+  }
+
+  async function importDump(file: File) {
+    setTransferBusy(true);
+    setTransferMsg("");
+    try {
+      const parsed = parseDumpJson(await file.text());
+      // 先展示对账再确认：让用户看清"要灌进来什么"再落库
+      const rowsMsg = (() => {
+        const t = (parsed as { tables?: Record<string, unknown[]> })?.tables;
+        return t ? countsSummary(t) : "?";
+      })();
+      const replace = window.confirm(
+        `导入转储：${rowsMsg}\n\n「确定」= 整库替换（本机现有数据先清空，完全回到转储时刻）；\n「取消」= 合并导入（同 id 覆盖、其余保留）。`,
+      );
+      const r = await restoreDump(tableMap, parsed, { mode: replace ? "replace" : "merge", currentSchemaVersion: db.verno });
+      setTransferMsg(
+        `导入完成（${replace ? "整库替换" : "合并"}）：${countsSummary(r.counts)}，共 ${r.total} 行。${r.schemaWarning ? `⚠ ${r.schemaWarning}` : ""}${
+          r.unknownTables.length ? `（忽略了本版本不认识的表：${r.unknownTables.join("、")}）` : ""
+        } 刷新各页即见。`,
+      );
+    } catch (e) {
+      setTransferMsg(`导入失败：${errMsg(e)}`);
+    } finally {
+      setTransferBusy(false);
+      if (importFileRef.current) importFileRef.current.value = "";
     }
   }
 
@@ -352,6 +423,35 @@ export function SettingsPanel() {
         <p className="muted" style={{ marginTop: 6, fontSize: 12 }}>
           进度记忆＝各页面自动记的现场（选中项、草稿、最后打开的剧组等）。平时自动记，这里一键清除。
         </p>
+
+        {/* ---------- 全库转储 / 恢复（v7-A3 迁移桥） ---------- */}
+        <h3 style={{ marginBottom: 4 }}>全库转储（备份 / 迁移）</h3>
+        <p className="muted" style={{ fontSize: 12, marginTop: 0 }}>
+          一本不落导出全部数据（作品/大纲/人物卡/世界书/画像/台账/剧场会话）。
+          换浏览器、或迁移到桌面版时：在这里导出 → 到对面「导入」。导入按 id 幂等：合并=同条覆盖，整库替换=先清空。
+        </p>
+        <div className="row" style={{ marginTop: 4, alignItems: "center", flexWrap: "wrap" }}>
+          <button disabled={transferBusy} onClick={() => void exportDump()}>
+            {transferBusy ? "处理中…" : "📦 导出全部数据(.json)"}
+          </button>
+          <button disabled={transferBusy} onClick={() => importFileRef.current?.click()}>
+            📥 导入转储文件
+          </button>
+          <input
+            ref={importFileRef}
+            type="file"
+            accept=".json,application/json"
+            style={{ display: "none" }}
+            onChange={(e) => {
+              const f = e.target.files?.[0];
+              if (f) void importDump(f);
+            }}
+          />
+        </div>
+        {transferMsg && (
+          <p style={{ fontSize: 13, color: transferMsg.includes("失败") ? "#b3261e" : "var(--accent)" }}>{transferMsg}</p>
+        )}
+
         <div className="row" style={{ marginTop: 12 }}>
           <button className="primary" onClick={save}>
             保存
