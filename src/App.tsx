@@ -35,7 +35,9 @@ export default function App() {
   return (
     <div className="app">
       <header className="topbar">
-        <span className="logo">📖 Story Studio</span>
+        <span className="logo">
+          📖 Story Studio <span className="muted" style={{ fontWeight: 400, fontSize: 12 }}>v{__APP_VERSION__}</span>
+        </span>
         <nav>
           {TABS.map((t) => (
             <button

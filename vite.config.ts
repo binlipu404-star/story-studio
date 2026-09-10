@@ -1,5 +1,6 @@
 import { defineConfig, loadEnv } from "vite";
 import react from "@vitejs/plugin-react";
+import pkg from "./package.json";
 
 // Web-first：AI 请求由浏览器直连用户在设置里填写的 baseURL（OpenAI 兼容端点）。
 // 需要代理的端点（不允许 CORS 的）属于桌面壳阶段的能力，见规划文档第 6 节。
@@ -16,6 +17,9 @@ export default defineConfig(({ mode }) => {
   return {
     // GitHub Pages（项目页挂在 /<仓库名>/ 子路径下）：相对路径资源，免绑仓库名。
     base: "./",
+    // 版本单一正源：package.json 的 version 编译期注入前端（__APP_VERSION__）。
+    // 桌面壳另有 src-tauri 两处版本，发版家法要求四处对齐——升级后对徽标即可肉眼对账。
+    define: { __APP_VERSION__: JSON.stringify(pkg.version) },
     plugins: [react()],
     server: {
       watch: {

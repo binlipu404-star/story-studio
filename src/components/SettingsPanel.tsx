@@ -176,6 +176,21 @@ export function SettingsPanel() {
   }
   const [webapp, setWebapp] = useState<WebappStatus | null>(null);
   const [webappMsg, setWebappMsg] = useState("");
+  // 版本对账（v7.2）：壳版本（tauri.conf/Cargo 系）与前端版本（package.json 注入）并排显示，
+  // 不一致=发版漏改或用户区放了旧 dist，红字提醒。
+  const [shellVersion, setShellVersion] = useState("");
+  useEffect(() => {
+    if (!inShell) return;
+    void (async () => {
+      try {
+        const { getVersion } = await import("@tauri-apps/api/app");
+        setShellVersion(await getVersion());
+      } catch {
+        /* 老壳取不到就算了，不碍事 */
+      }
+    })();
+  }, [inShell]);
+  const verMismatch = shellVersion !== "" && shellVersion !== __APP_VERSION__;
   async function reloadWebapp() {
     try {
       const { invoke } = await import("@tauri-apps/api/core");
@@ -353,7 +368,17 @@ export function SettingsPanel() {
       {/* ---------- 桌面壳（仅桌面版显示）：本地代理一键接入 ---------- */}
       {inShell && (
         <div className="panel">
-          <h3 style={{ marginTop: 0 }}>🖥 桌面版</h3>
+          <h3 style={{ marginTop: 0 }}>
+            🖥 桌面版{" "}
+            <span className="muted" style={{ fontWeight: 400, fontSize: 12 }}>
+              壳 v{shellVersion || "?"} · 前端 v{__APP_VERSION__}
+            </span>
+            {verMismatch && (
+              <b style={{ color: "#c62828", fontSize: 12, marginLeft: 6 }} title="壳与前端版本不一致：多半是用户区放了旧 dist，或某处版本号漏改">
+                ⚠ 版本不一致
+              </b>
+            )}
+          </h3>
           <div className="row" style={{ alignItems: "center", flexWrap: "wrap" }}>
             <span className="muted">
               本地代理：
