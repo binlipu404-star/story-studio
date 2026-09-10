@@ -588,15 +588,9 @@ export function TheaterPage() {
 
   const deleteRoom = async (room: RPSession) => {
     const nm = (room.name ?? room.id).slice(0, 20); // 审计 P1：长名弹窗截断
-    if (!window.confirm(`删除剧组「${nm}」？其对话与剧组正典（${room.id.slice(0, 6)}…绑定台账）一并删除，不可撤销。`)) return;
-    // M5 留底：先自动导出一份 jsonl 落盘（磁盘旧快照不会被删，双保险）
-    try {
-      // 角色名按**本剧组**推导（旧版误用当前活动剧组的装配名）
-      const charName = room.id === activeRoom?.id ? assembly?.setup.charName ?? "角色" : room.config?.charId ? "角色" : "旁白";
-      downloadText(roomFileName(room.name ?? "", room.id), exportJsonl(room, charName));
-    } catch {
-      /* 留底失败不拦删除 */
-    }
+    if (!window.confirm(`删除剧组「${nm}」？其对话与剧组正典（${room.id.slice(0, 6)}…绑定台账）一并删除，不可撤销。\n如需留底请先点行内「⬇」手动导出。`)) return;
+    // v7.1-W1：去掉删前自动下载 jsonl 留底（用户反馈太吵）。兜底改由行内「⬇」手动导出、
+    // 已连本地文件夹的磁盘快照（删组不删盘上旧文件）、设置页全库转储三路承担。
     await repos.deleteSession(room.id); // 级联删 roomId 台账（repos 层单事务保证）
     setRooms((prev) => prev.filter((r) => r.id !== room.id));
     if (activeId === room.id) setActiveId(rooms.find((r) => r.id !== room.id)?.id ?? "");
