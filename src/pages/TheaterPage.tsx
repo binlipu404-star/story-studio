@@ -33,13 +33,15 @@ import { composeAuthorNote } from "../flow/rp";
 import type { DigestLedgerItem } from "../flow/snapshot";
 import {
   buildScriptSnapshot,
-  detectMainScriptUpdate,
+  describeMainScriptUpdate,
   mergeProgressOnSync,
   planLedgerCadence,
   roomScope,
   scenesOfChapters,
   storyAdvance,
 } from "../flow/script";
+import { makeDebouncer } from "../flow/progress";
+import { subscribeOutlineChanged } from "../flow/outlineBus";
 import { assembleRoom, newRoom, roomCurrentScene, roomSort } from "../flow/theater";
 import { loadPrefs, savePrefs } from "../flow/prefs";
 import { subscribeAgentRun, startOrganize, type OrganizeIO } from "../flow/agentrun";
@@ -240,6 +242,23 @@ export function TheaterPage() {
     savePrefs(prefsRef.current);
   }, [activeId]);
 
+  // v7.1-W2：跨窗口大纲变更 → 只重拉 nodes（防抖 300ms，事件驱动、零轮询）。
+  // 同窗口切页签本来就重挂载重拉；这里补的是"另开窗口改大纲"的缺口。
+  useEffect(() => {
+    const pid = activeRoom?.projectId;
+    if (!pid) return;
+    const refetch = makeDebouncer(300, () => {
+      void repos.listNodes(pid).then((nd) => setNodes(nd)).catch(() => undefined);
+    });
+    const off = subscribeOutlineChanged((changedPid) => {
+      if (!changedPid || changedPid === pid) refetch.bump();
+    });
+    return () => {
+      off();
+      refetch.cancel();
+    };
+  }, [activeRoom?.projectId]); // eslint-disable-line react-hooks/exhaustive-deps
+
   // ------------------------------------------------------------
   // 本地写盘（P4）
   // ------------------------------------------------------------
@@ -286,11 +305,14 @@ export function TheaterPage() {
   }, [assembly, corrections]);
 
   // 主纲又变了？（仅 full 模式提示；chapters 模式设计上不敏感）
-  const mainUpdated = useMemo(() => {
-    if (!activeRoom || activeRoom.sandbox || !activeRoom.script) return false;
-    if (roomScope(activeRoom.scopeMode) !== "full") return false;
-    return detectMainScriptUpdate(activeRoom.script, nodes);
+  // v7.1-W2：升级为明细（改/删/增），配合下方 outlineBus 订阅实现"边写大纲边 RP"自动感知
+  const mainUpdate = useMemo(() => {
+    if (!activeRoom || activeRoom.sandbox || !activeRoom.script) return null;
+    if (roomScope(activeRoom.scopeMode) !== "full") return null;
+    const info = describeMainScriptUpdate(activeRoom.script, nodes);
+    return info.changed ? info : null;
   }, [activeRoom, nodes]);
+  const mainUpdated = mainUpdate !== null;
 
   // ------------------------------------------------------------
   // 剧组持久化（稳定落定才写；每次写盘全量 jsonl 快照）
@@ -933,9 +955,22 @@ export function TheaterPage() {
                 {adv && !activeRoom.sandbox && adv.scenesTotal > 0 ? ` · 副本进展 幕${(adv.currentSceneIndex ?? adv.scenesTotal - 1) + 1}/${adv.scenesTotal} 拍${adv.beatsDone}/${adv.beatsTotal}` : ""}
                 {adv?.finished ? " · 副本已全部演完" : ""}
               </span>
-              {mainUpdated && (activeRoom.scopeMode ?? "full") === "full" && (
-                <button style={{ borderColor: "var(--accent)" }} title="把主纲最新大纲重新拍进本剧组副本（已演标记尽量保留）。不点就永远用旧副本。" onClick={() => void syncSnapshot()}>
-                  ⚡ 主纲有更新，同步副本
+              {mainUpdated && mainUpdate && (activeRoom.scopeMode ?? "full") === "full" && (
+                <button
+                  style={{ borderColor: "var(--accent)" }}
+                  title={
+                    `把主纲最新大纲重新拍进本剧组副本（已演标记尽量保留）。不点就永远用旧副本。\n` +
+                    (mainUpdate.edited.length ? `已改动：${mainUpdate.edited.slice(0, 5).join("、")}${mainUpdate.edited.length > 5 ? "…" : ""}\n` : "") +
+                    (mainUpdate.added > 0 ? `新增 ${mainUpdate.added} 幕将插入副本\n` : "") +
+                    (mainUpdate.removed.length ? `⚠ 主纲已删：${mainUpdate.removed.slice(0, 5).join("、")}${mainUpdate.removed.length > 5 ? "…" : ""}（同步后从副本消失，其已演标记作废）` : "")
+                  }
+                  onClick={() => void syncSnapshot()}
+                >
+                  ⚡ 主纲有更新（
+                  {mainUpdate.edited.length > 0 && `改${mainUpdate.edited.length}`}
+                  {mainUpdate.added > 0 && `${mainUpdate.edited.length > 0 ? "·" : ""}增${mainUpdate.added}`}
+                  {mainUpdate.removed.length > 0 && `${mainUpdate.edited.length > 0 || mainUpdate.added > 0 ? "·" : ""}删${mainUpdate.removed.length}`}
+                  ），同步副本
                 </button>
               )}
               <span style={{ marginLeft: "auto", fontSize: 11, color: "var(--muted)" }}>

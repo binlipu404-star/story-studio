@@ -2,6 +2,7 @@
 import {
   buildScriptSnapshot,
   detectMainScriptUpdate,
+  describeMainScriptUpdate,
   mergeProgressOnSync,
   storyAdvance,
   scriptBlock,
@@ -38,15 +39,30 @@ export default async function (t) {
     t.eq(snap.nodesUpdatedAt, 10, "1. 基准=节点最大 updatedAt");
   }
 
-  // 2. 主纲变化检测
+  // 2. 主纲变化检测（v7.1-W2：detect 升级为含删幕/新增幕；describe 给明细）
   {
     const snap = buildScriptSnapshot("T", [volume(), chapter(), scene()], [scene()], 100);
     t.eq(detectMainScriptUpdate(snap, [volume(), chapter(), scene()]), false, "2. 未变 → false");
     const moved = scene({ updatedAt: 500 });
     t.eq(detectMainScriptUpdate(snap, [volume(), chapter(), moved]), true, "2. 幕被改 → true");
-    t.eq(detectMainScriptUpdate(snap, [volume(), chapter()]), false, "2. 幕被删 → false（不是变化信号）");
+    // v7.1-W2 改契约：删幕如今是变化信号（副本引用的幕没了，该提示同步）
+    t.eq(detectMainScriptUpdate(snap, [volume(), chapter()]), true, "2. 幕被删 → true（v7.1 改）");
+    // 新增副本外的幕 → 也是变化（边写大纲边 RP：加了新幕要能提示）
+    const extra = scene({ id: "s2", title: "新幕", updatedAt: 8 });
+    t.eq(detectMainScriptUpdate(snap, [volume(), chapter(), scene(), extra]), true, "2. 新增幕 → true");
     const sandbox = buildScriptSnapshot("T", [], [], 100);
     t.eq(detectMainScriptUpdate(sandbox, [scene()]), false, "2. 沙盒组永不提示");
+    // describe 明细
+    const d1 = describeMainScriptUpdate(snap, [volume(), chapter(), scene({ updatedAt: 500 })]);
+    t.eq(d1.edited.length, 1, "2d. 改 1 幕");
+    t.eq(d1.removed.length, 0, "2d. 无删");
+    t.eq(d1.added, 0, "2d. 无增");
+    const d2 = describeMainScriptUpdate(snap, [volume(), chapter()]);
+    t.eq(d2.removed.length, 1, "2d. 删 1 幕入 removed");
+    t.ok(d2.removed[0] === "祭坛之夜", "2d. removed 带幕题");
+    const d3 = describeMainScriptUpdate(snap, [volume(), chapter(), scene(), scene({ id: "s9", title: "插叙", updatedAt: 8 })]);
+    t.eq(d3.added, 1, "2d. 副本外新幕计入 added");
+    t.eq(d3.changed, true, "2d. added>0 也算 changed");
   }
 
   // 3. 同步时标记合并：孤儿标记清理、有效标记保留

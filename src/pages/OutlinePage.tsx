@@ -50,6 +50,7 @@ import {
   type MasterOutlineJson,
 } from "../flow/outline.js";
 import { planDraftMerge } from "../flow/outlineMerge";
+import { notifyOutlineChanged } from "../flow/outlineBus";
 import { chatJSON } from "../ai/client";
 import { outlineCoachPrompt, sceneBeatsPrompt } from "../ai/prompts";
 import { draftToBookScenes, outlineBookJson, type OutlineBookScene } from "../flow/outlinebook";
@@ -456,7 +457,10 @@ export function OutlinePage({ projectId }: { projectId: string }) {
         return;
       }
       // 三路分发：新建 → 内容修订（revision+1）→ 排序（不动 revision）
-      if (plan.creates.length > 0) await db.outlineNodes.bulkAdd(plan.creates);
+      if (plan.creates.length > 0) {
+        await db.outlineNodes.bulkAdd(plan.creates);
+        notifyOutlineChanged(projectId); // 直通表写入不过 repos 门面，自行广播
+      }
       for (const u of plan.fieldUpdates) await repos.updateNode(u.id, u.patch);
       await repos.applyMovePlan(plan.orderUpdates);
       const rows = await reload();

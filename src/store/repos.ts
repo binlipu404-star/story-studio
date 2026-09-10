@@ -11,6 +11,7 @@ import { DEFAULT_BIBLE_FIELDS, DEFAULT_LOREBOOK_SETTINGS } from "./templates";
 import { assignLegacyBook, filterVisible, keepBooksEnabled, legacySelection, visibleByBooks } from "../flow/library";
 import { toLoreEntries } from "../st/lorebook"; // 纯逻辑层（解析/装配），无 IO，允许门面复用
 import type { MoveUpdate } from "../flow/outline"; // 纯逻辑层类型（flow/outline 不 import store，无循环依赖）
+import { notifyOutlineChanged } from "../flow/outlineBus"; // 跨窗口大纲变更广播（无 IO，不 import store）
 import type {
   Character,
   CharacterProfile,
@@ -163,6 +164,7 @@ export async function addNode(
       updatedAt: now,
     };
     await db.outlineNodes.add(node);
+    notifyOutlineChanged(projectId);
     return node;
   });
 }
@@ -208,12 +210,14 @@ export async function updateNode(id: ID, patch: OutlineNodePatch): Promise<Outli
   const current = await db.outlineNodes.get(id);
   if (!current) return undefined;
   await db.outlineNodes.update(id, { ...patch, revision: current.revision + 1, updatedAt: Date.now() });
+  notifyOutlineChanged(current.projectId);
   return db.outlineNodes.get(id);
 }
 
 /** 仅流转状态（idea/draft/…）：动 updatedAt 不动 revision（状态不算内容修订）。 */
 export async function setNodeStatus(id: ID, status: OutlineStatus): Promise<OutlineNode | undefined> {
   await db.outlineNodes.update(id, { status, updatedAt: Date.now() });
+  notifyOutlineChanged(""); // 空=未带作品 id，订阅方按当前作品一律重拉（低频）
   return db.outlineNodes.get(id);
 }
 
@@ -223,6 +227,7 @@ export async function removeNodeCascade(projectId: ID, id: ID): Promise<void> {
     const ids = await subtreeIds(projectId, id);
     await db.outlineNodes.bulkDelete(ids);
   });
+  notifyOutlineChanged(projectId);
 }
 
 /**
@@ -243,6 +248,7 @@ export async function applyMovePlan(updates: MoveUpdate[]): Promise<void> {
       });
     }
   });
+  notifyOutlineChanged(""); // 排序不落 projectId，广播空串让订阅方重拉当前作品
 }
 
 // ============================================================

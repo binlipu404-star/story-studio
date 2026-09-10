@@ -42,15 +42,36 @@ export function buildScriptSnapshot(
   };
 }
 
-/** 副本生成后主纲是否又变了（full 模式同步提示的依据：比对幕节点 updatedAt 与快照时点） */
-export function detectMainScriptUpdate(snapshot: ScriptSnapshot, nodes: OutlineNode[]): boolean {
-  if (!snapshot.scenes.length) return false;
+/** 副本生成后主纲变化的描述（v7.1-W2：从布尔升级为明细，边写大纲边 RP 要看得见"改在哪"） */
+export interface ScriptUpdateInfo {
+  changed: boolean;
+  /** 副本内已被改动（title/intent/beats 等）的幕题 */
+  edited: string[];
+  /** 副本内引用、但主纲已删掉的幕题（同步后这些幕会从副本消失） */
+  removed: string[];
+  /** 主纲新增（副本外）的幕数（同步后会插进副本） */
+  added: number;
+}
+
+/** 描述主纲相对副本的变化。空副本（沙盒组）恒无变化。 */
+export function describeMainScriptUpdate(snapshot: ScriptSnapshot, nodes: OutlineNode[]): ScriptUpdateInfo {
+  if (!snapshot.scenes.length) return { changed: false, edited: [], removed: [], added: 0 };
   const byId = new Map(nodes.map((n) => [n.id, n] as const));
+  const edited: string[] = [];
+  const removed: string[] = [];
   for (const sc of snapshot.scenes) {
     const live = sc.nodeId ? byId.get(sc.nodeId) : undefined;
-    if (live && live.updatedAt > snapshot.nodesUpdatedAt) return true;
+    if (!live) removed.push(sc.title || "（未命名）");
+    else if (live.updatedAt > snapshot.nodesUpdatedAt) edited.push(sc.title || "（未命名）");
   }
-  return false;
+  const snapIds = new Set(snapshot.scenes.map((s) => s.nodeId));
+  const added = nodes.filter((n) => n.level === "scene" && !snapIds.has(n.id)).length;
+  return { changed: edited.length + removed.length + added > 0, edited, removed, added };
+}
+
+/** 副本生成后主纲是否又变了（full 模式同步提示的依据）。v7.1-W2 起含删幕与新增幕。 */
+export function detectMainScriptUpdate(snapshot: ScriptSnapshot, nodes: OutlineNode[]): boolean {
+  return describeMainScriptUpdate(snapshot, nodes).changed;
 }
 
 /** 同步副本时保留已有完成标记（按 beatId；主纲重排的孤儿标记自然失效） */
