@@ -1,0 +1,48 @@
+# 桌面版发布（v7-B2）：打 tag（v*）即出 Windows NSIS 安装包 + updater 签名 + latest.json。
+# 产物挂到 GitHub Release；应用内「检查更新」经 plugins.updater 双源端点拉 latest.json。
+# 需要的仓库 secrets（Settings → Secrets and variables → Actions）：
+#   TAURI_SIGNING_PRIVATE_KEY            = ~/.tauri/story-studio.key 文件全文
+#   TAURI_SIGNING_PRIVATE_KEY_PASSWORD   = 私钥密码
+# 浏览器版部署走 deploy-web.yml，与本流水线互不干扰。
+name: Release Desktop
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  publish-windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      # windows-latest 镜像预装 Rust，但版本随镜像漂移，官方示例惯例：显式钉 stable
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+      - run: npm ci
+      # 出包前跑浏览器版门禁（build 脚本含 tsc；壳复用同一份 dist）
+      - run: npm run typecheck
+      - run: npm run test:logic
+      - uses: tauri-apps/tauri-action@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        with:
+          tagName: v__VERSION__
+          releaseName: "Story Studio v__VERSION__"
+          releaseBody: "Windows 桌面版：Story Studio_<版本>_x64-setup.exe（下载即装，自动更新已内置）"
+          releaseDraft: false
+          prerelease: false
+          # 只出 NSIS（tauri.conf targets=["nsis"]），此开关为双保险
+          updaterJsonPreferNsis: true
