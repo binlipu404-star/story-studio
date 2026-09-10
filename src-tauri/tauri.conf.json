@@ -29,6 +29,7 @@
   "bundle": {
     "active": true,
     "targets": ["nsis"],
+    "createUpdaterArtifacts": true,
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",
@@ -45,5 +46,14 @@
       }
     }
   },
-  "plugins": {}
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDJENzYwODZENEYyQjJENUIKUldSYkxTdFBiUWgyTFl3aU80ODV5UTd4OGFDcnViVlBYWW1LQVRzRWVLTXNJeGk2SlFkOFdTKzEK",
+      "endpoints": [
+        "https://github.com/binlipu404-star/story-studio/releases/latest/download/latest.json",
+        "https://gh-proxy.com/https://github.com/binlipu404-star/story-studio/releases/latest/download/latest.json"
+      ],
+      "windows": { "installMode": "passive" }
+    }
+  }
 }

@@ -162,6 +162,41 @@ export function SettingsPanel() {
     setMsg(`已填入本地代理前缀（:${port}）——点「保存设置」生效`);
   }
 
+  // ---------- 自动更新（v7-B1，仅壳内）：动态 import，浏览器版不打进包 ----------
+  const [updMsg, setUpdMsg] = useState("");
+  const [updBusy, setUpdBusy] = useState(false);
+
+  async function checkUpdate() {
+    setUpdBusy(true);
+    setUpdMsg("检查中…");
+    try {
+      const { check } = await import("@tauri-apps/plugin-updater");
+      const update = await check();
+      if (!update) {
+        setUpdMsg("已是最新版本");
+        return;
+      }
+      setUpdMsg(`发现新版本 ${update.version}，下载中…`);
+      let got = 0;
+      await update.downloadAndInstall((ev) => {
+        if (ev.event === "Progress") {
+          got += ev.data.chunkLength;
+          setUpdMsg(`下载新版本 ${update.version}：已收 ${(got / 1024 / 1024).toFixed(1)} MB…`);
+        } else if (ev.event === "Finished") {
+          setUpdMsg("下载完成，安装中（装完自动重启）…");
+        }
+      });
+      const { relaunch } = await import("@tauri-apps/plugin-process");
+      setUpdMsg("安装完成，正在重启…");
+      await relaunch();
+    } catch (e) {
+      // 静默失败哲学：GitHub 抽风/镜像未同步都不该堵死用户，如实报一句即可
+      setUpdMsg(`更新失败（不影响使用，可稍后再试）：${errMsg(e)}`);
+    } finally {
+      setUpdBusy(false);
+    }
+  }
+
   // ---------- 全库转储 / 恢复（v7-A3）：db 表句柄即 TableLike（结构满足） ----------
 
   const tableMap = db as unknown as TableMap;
@@ -298,7 +333,11 @@ export function SettingsPanel() {
             <button className="primary" disabled={proxyPort === 0} onClick={() => void fillProxyUrls()}>
               一键把下方 baseURL 改为走本地代理
             </button>
+            <button disabled={updBusy} onClick={() => void checkUpdate()}>
+              {updBusy ? "更新中…" : "🔄 检查更新"}
+            </button>
           </div>
+          {updMsg && <p className="muted" style={{ margin: "6px 0 0", fontSize: 13 }}>{updMsg}</p>}
         </div>
       )}
 
