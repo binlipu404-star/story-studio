@@ -1,6 +1,6 @@
 # Story Studio — 设计说明与自我剖析（审阅版）
 
-> 版本锚点：git HEAD ≥ `ec490f5` 之后的 v4 轮（人物卡/世界书升级为顶层全局资产库 + 规模化 UI 加固，随后 GitHub 公开部署）→ v5 轮（世界书整本书化，schema 零迁移）→ v6 轮（大纲工作台重构：手动+对话两视图、拖拽排序、反「只说不做」红线，schema 零迁移）。src 共 51 个 ts/tsx 文件、约 1.5 万行；逻辑测试基线 **864 断言 / 25 个测试文件**（v4 新增 16 条 flow/library.ts 可见集断言；v5 新增 31 条书制断言 scripts/tests/library-book.test.mjs；v6 新增 outline-move 46 条 + claims 17 条 + prompts 红线追加断言共 77 条；真实 PNG 卡不入库，未设 `SS_TEST_PNG` 时 5 条 PNG 断言转为 2 条 skip，即 CI 上 total=859 skipped=2 failed=0）。此前 718→716 的唯一减少来自删除死函数 `rpSystemPrompt` 附带的 2 条其专属断言，属删死代码的合理收缩，非覆盖退化。
+> 版本锚点：git HEAD ≥ `ec490f5` 之后的 v4 轮（人物卡/世界书升级为顶层全局资产库 + 规模化 UI 加固，随后 GitHub 公开部署）→ v5 轮（世界书整本书化，schema 零迁移）→ v6 轮（大纲工作台重构：手动+对话两视图、拖拽排序、反「只说不做」红线，schema 零迁移）→ v6.1 轮（网络根治：dev `/llm` 代理、system 消息前置归一 `ai/messages.ts`、设置页字段防呆）→ v6.2 轮（设置页端点「预设」：多套 URL/模型/Key 命名快照一键切换）→ **v7 轮（桌面版，Tauri v2 壳 `src-tauri/`：identifier `town.cafero.storystudio` 钉死；壳内 127.0.0.1 本地代理根治 CORS=client.ts 零改动；全库转储/恢复迁移桥 `flow/transfer.ts`；minisign+GitHub Releases 自动更新；CI `release-desktop.yml` 推 tag 出 NSIS）**。src 共 55 个 ts/tsx 文件、约 1.6 万行；逻辑测试基线 **931 断言 / 28 个测试文件（无 PNG 实测值；本机设 `SS_TEST_PNG` 时约 +3 断言）**（v4 新增 16 条 flow/library.ts 可见集断言；v5 新增 31 条书制断言 scripts/tests/library-book.test.mjs；v6 新增 outline-move 46 条 + claims 17 条 + prompts 红线追加断言共 77 条；v6.1 新增 hoist-system 12 条；v6.2 新增 presets 29 条；v7 新增 transfer 31 条；真实 PNG 卡不入库，未设 `SS_TEST_PNG` 时 5 条 PNG 断言转为 2 条 skip，即 CI 上 total=931 skipped=2 failed=0）。此前 718→716 的唯一减少来自删除死函数 `rpSystemPrompt` 附带的 2 条其专属断言，属删死代码的合理收缩，非覆盖退化。
 > **术语对照**：产品把剧场的长期 RP 单元称为**「剧组」**（旧称「房间」，UI/文档已全量更名）。代码标识符与持久化键**保留 room 词根不动**（`activeRoom`/`queueRoomWrite`/`RPSession.kind:"theater"`/`ledger.roomId`/`prefs.lastRoomId` 等——改持久键需数据迁移，收益低风险高，明确不做）。读到「剧组」↔`room*` 并存即是此决策，不是遗漏。派生动词随隐喻走：开房→**开机**、整房重来→**整组重来**。
 > 本文档面向接手审阅的 AI/工程师。所有陈述均以仓库代码为准，标注了文件与行级线索；第 12 节是自认缺陷清单，请优先审阅该节。
 > 配套文件：`docs/ROADMAP.md`（里程碑史）、`README.md`（入口）、仓库根 `验收清单.md`（人工验收步骤，含 v3.1 手测清单）。
@@ -316,7 +316,7 @@ AI 开放式访谈边谈边长草稿：`interviewSystemPrompt` 要求模型输�
 
 ## 9. 工程惯例（审阅时请按这些约定判卷）
 
-1. **严格门**：`typecheck`（strict + noUnusedLocals + isolatedModules）→ `test:logic`（build:logic + run-tests，**基线 864 只增不减**）→ `build` → git 提交。每步全绿才许提交，commit message 里带测试数（编年史可查 368→413→…→756→787→864；718→716 是唯一一次经论证的死代码收缩，见版本锚点）。
+1. **严格门**：`typecheck`（strict + noUnusedLocals + isolatedModules）→ `test:logic`（build:logic + run-tests，**基线 931 只增不减**）→ `build` → git 提交。每步全绿才许提交，commit message 里带测试数（编年史可查 368→413→…→756→787→864→900→931；718→716 是唯一一次经论证的死代码收缩，见版本锚点）。
 2. **测试微框架**：`scripts/tests/*.test.mjs` 默认导出 `async (t)`，t={ok,eq,skip}；从 `dist-test/` import 编译产物——测的是真实运行代码而非源码副本。无第三方测试库。
 3. **防御式解析**是家法：`parsePrefs/parseHandoff/loadAppConfig/sanitizeDigest/extractJson/parseCardJsonText` 全部"永不抛错，坏数据逐字段回落默认/返回 null"。评审时看到空 catch + 注释是风格而非疏忽（均有注释说明为何可忽略）。
 4. **注释风格**：每文件头部块注释讲"为什么+踩过的坑"（useDefineForClassFields 覆表、IndexedDB 复合键 null、vite EBUSY——vite.config `watch.ignored` 即第三坑的疤痕）。
@@ -367,7 +367,7 @@ AI 开放式访谈边谈边长草稿：`interviewSystemPrompt` 要求模型输�
 
 **结构性债**
 14. 页面巨型化：OutlinePage 1497 / TheaterPage 1105 / TrialPage 944 行；无 ErrorBoundary（任何渲染期异常白屏整页）；无路由（深链不可能）；无组件抽象纪律（内联样式复制粘贴——b56beb2 已把跨页**非 UI** 纯工具收敛到 `core/uiUtils.ts`，内联样式与 Badge 仍按纪律留在页内）。
-15. **React 层零自动化测试**：864 断言全部覆盖非 UI 逻辑；§7.5 的九条写安全不变量里 6-9 条只靠人工验收（`验收清单.md`）。Dexie 层同样无常规测试（仅一次性 fake-indexeddb probe）。
+15. **React 层零自动化测试**：931 断言全部覆盖非 UI 逻辑；§7.5 的九条写安全不变量里 6-9 条只靠人工验收（`验收清单.md`）。Dexie 层同样无常规测试（仅一次性 fake-indexeddb probe）。
 16. 双"生命周期脱离组件"实现（jobBus 与 agentrun）结构相似未收敛；prefs/progress/handoff 三个 localStorage 壳也各自发明了一次 storage() 探测——可提炼但未提炼（有意识：三处校验语义不同，合并收益低于风险）。
 17. **v4 全局库的已知边界**：`listAll*`/可见集全表扫（万级需索引或虚拟化）；`nextUid` 全表扫取号；选用列表读侧悬空容忍但**作品改名/删卡不级联改** OutlineNode.cast 与 RPSession.cast 里的 id（读侧同样容错，语义=历史引用允许悬空）；全局页批量删除按"当前过滤视图"作用——过滤后全选删除与全库删除在按钮文案上区分，但纪律仍是用户自查。项目包导出打包的是**可见集**（含共享自他作品的资产）——ST 通用格式无差别，但"从包里重建全局库"的回灌器尚不存在。
 
@@ -377,7 +377,7 @@ AI 开放式访谈边谈边长草稿：`interviewSystemPrompt` 要求模型输�
 
 ```bash
 npm run typecheck      # 期望 exit 0
-npm run test:logic     # 本机（设 SS_TEST_PNG 指向真实 PNG 卡）期望 total=864 failed=0；CI 无卡时 total=859 skipped=2 failed=0。若你新增测试，只许 >864
+npm run test:logic     # 本机（设 SS_TEST_PNG 指向真实 PNG 卡）期望 total≈934 failed=0；CI 无卡时 total=931 skipped=2 failed=0。若你新增测试，只许 >931
 npm run build          # tsc --noEmit && vite build
 npm run test:fixtures  # 用 docs/fixtures 下真实 ST 样本跑解析器
 git log --oneline      # 完整编年史（a186ee4 → b56beb2 → 至今；提交者为 GitHub noreply 邮箱）

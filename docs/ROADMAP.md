@@ -123,7 +123,7 @@ v0.1 遗留小决策已被现实回答：#4 RP 视角=单 {{user}} 角色扮演�
 - **⑦ 可折叠思维链 + 场记随轮自动** ✅：assistant 回复下 `<details>` 默认折叠，展开见思维链原文 + 场记活动（工具调用/进度标记逐条）；`reasoning`/`notes` 持久化，切页回来仍在；场记默认**每楼自动**（`ledgerCadence` 默认 1，可设 0 关），进度一行 `【进展备忘】第 X/N 幕 · 拍 m/n；下一拍：…`（`progressMemoText`）注入台面，AI 与用户每轮都看得见当前进度。
 
 ## 2. 节奏与门禁（不变项）
-- 每步交付：typecheck=0 → test:logic 全绿（基线 864，只增不减）→ build → 运行实例无缓存参数验 FRESH → git 提交
+- 每步交付：typecheck=0 → test:logic 全绿（基线 931，只增不减）→ build → 运行实例无缓存参数验 FRESH → git 提交
 - 纯逻辑（flow/st/ai 提示词）一律进 Node 冒烟测试；UI 靠验收清单手测
 - 每里程碑收尾更新本文档状态列 + README
 
