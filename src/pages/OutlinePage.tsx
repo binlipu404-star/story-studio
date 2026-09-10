@@ -219,6 +219,13 @@ export function OutlinePage({ projectId }: { projectId: string }) {
   // 「应用到大纲树」一步弹窗 + 顺手填充节拍勾选
   const [appModal, setAppModal] = useState(false);
   const [fillOnApply, setFillOnApply] = useState(true);
+  // 对话区滚动：重进页面时历史消息从 localStorage 恢复（可达 60 条），不干预的话
+  // 视口停在最顶端——用户要滚到最底才看到最新一问一答。默认钉到最新一条。
+  const chatBoxRef = useRef<HTMLDivElement | null>(null);
+  useEffect(() => {
+    const el = chatBoxRef.current;
+    if (el) el.scrollTop = el.scrollHeight;
+  }, [coachMsgs.length, loaded, view]);
 
   const reload = useCallback(async (): Promise<OutlineNode[]> => {
     try {
@@ -318,6 +325,15 @@ export function OutlinePage({ projectId }: { projectId: string }) {
   // ---------- 对话创作：访谈搭草稿 → 弹窗应用（可顺手填节拍）/ 直通成书 ----------
 
   const coachStats = countDraft(coachDraft);
+  // 「重试本轮」的目标 = 最近一条用户原文（倒扫）。模型故障时 sendCoach 失败并不会
+  // 落下 assistant 气泡（没有气泡可挂按钮），所以按钮常驻操作行：
+  // 故障后重发上一问、以及"这轮回答不满意，重新生成"，都走这一个口。
+  const lastUserText = (() => {
+    for (let i = coachMsgs.length - 1; i >= 0; i--) {
+      if (coachMsgs[i].role === "user") return coachMsgs[i].content;
+    }
+    return "";
+  })();
 
   /** textArg：气泡「重试本轮」传入该轮的用户原文；省略=取输入框当前内容 */
   const sendCoach = async (textArg?: string) => {
@@ -1001,7 +1017,7 @@ export function OutlinePage({ projectId }: { projectId: string }) {
               <strong>💬 对话创作</strong>
               <span className="muted">每轮一问，只谈整体大纲/走向/细纲题目；创作发生在右侧草稿预览里</span>
             </div>
-            <div style={{ maxHeight: "56vh", overflowY: "auto" }}>
+            <div ref={chatBoxRef} style={{ maxHeight: "56vh", overflowY: "auto" }}>
               {coachMsgs.length === 0 && (
                 <p className="muted">
                   聊聊你想写什么——AI 每轮问一个关键问题，把答案长成右边的大纲草稿树。
@@ -1103,6 +1119,14 @@ export function OutlinePage({ projectId }: { projectId: string }) {
             <div className="row" style={{ flexWrap: "wrap" }}>
               <button className="primary" onClick={() => void sendCoach()} disabled={!!busy || !coachInput.trim() || !project}>
                 {busy ? "进行中…" : "发送"}
+              </button>
+              {/* v6.1：常驻「重试本轮」= 重发最近一问重新生成回答（模型故障/答得不满意都适用） */}
+              <button
+                title="重新发送最近一条提问，让 AI 重新生成本轮回答（草稿按新一轮结果更新）"
+                onClick={() => void sendCoach(lastUserText)}
+                disabled={!!busy || !lastUserText || !project}
+              >
+                🔁 重试本轮
               </button>
               {coachMsgs.length > 0 && !busy && (
                 <button
