@@ -166,6 +166,46 @@ export function SettingsPanel() {
   const [updMsg, setUpdMsg] = useState("");
   const [updBusy, setUpdBusy] = useState(false);
 
+  // ---------- 网页程序松绑（v7.2-D1，仅壳内）：用户区 dist 可自由导入/编辑 ----------
+  interface WebappStatus {
+    user_dir: string;
+    factory_dir: string;
+    user_active: boolean;
+    factory_present: boolean;
+    user_entries: string[];
+  }
+  const [webapp, setWebapp] = useState<WebappStatus | null>(null);
+  const [webappMsg, setWebappMsg] = useState("");
+  async function reloadWebapp() {
+    try {
+      const { invoke } = await import("@tauri-apps/api/core");
+      setWebapp(await invoke<WebappStatus>("webapp_status"));
+    } catch {
+      /* 老版壳没有这个命令：整块不显示即可 */
+    }
+  }
+  useEffect(() => {
+    if (inShell) void reloadWebapp();
+  }, [inShell]);
+
+  async function webappInvoke(cmd: "webapp_open_folder" | "webapp_reset") {
+    try {
+      const { invoke } = await import("@tauri-apps/api/core");
+      if (cmd === "webapp_reset") {
+        if (!window.confirm("恢复出厂 = 删除用户区的全部自定义网页文件，界面立即回到随包版本。\n（不动任何书稿数据）确定？")) return;
+        await invoke(cmd);
+        await reloadWebapp();
+        setWebappMsg("已恢复出厂：用户区已清空。如当前页面仍是旧版，重启应用即可。");
+      } else {
+        const dir = await invoke<string>(cmd);
+        await reloadWebapp();
+        setWebappMsg(`已在资源管理器打开：${dir}`);
+      }
+    } catch (e) {
+      setWebappMsg(`操作失败：${errMsg(e)}`);
+    }
+  }
+
   async function checkUpdate() {
     setUpdBusy(true);
     setUpdMsg("检查中…");
@@ -332,6 +372,43 @@ export function SettingsPanel() {
             </button>
           </div>
           {updMsg && <p className="muted" style={{ margin: "6px 0 0", fontSize: 13 }}>{updMsg}</p>}
+          {webapp && (
+            <div style={{ marginTop: 10, paddingTop: 10, borderTop: "1px dashed var(--border, #444)" }}>
+              <div className="muted" style={{ fontSize: 13 }}>
+                网页程序（可自定义界面）：
+                {webapp.user_active ? (
+                  <b>用户区生效中</b>
+                ) : webapp.factory_present ? (
+                  "随包版运行中"
+                ) : (
+                  "内嵌版运行中（升级到有松包的新版后此处可管理）"
+                )}
+              </div>
+              <div className="muted" style={{ fontSize: 12, marginTop: 4, wordBreak: "break-all" }}>
+                把 Story Studio 的 dist 构建产物整个放进下面的文件夹即可接管界面（重启应用生效）；删掉=恢复出厂。书稿数据与它无关。
+                <br />📂 {webapp.user_dir}
+                {webapp.user_active && webapp.user_entries.length > 0 && (
+                  <>
+                    <br />
+                    用户区现有：{webapp.user_entries.slice(0, 8).join("、")}
+                    {webapp.user_entries.length > 8 ? "…" : ""}
+                  </>
+                )}
+              </div>
+              <div className="row" style={{ marginTop: 6, flexWrap: "wrap" }}>
+                <button onClick={() => void webappInvoke("webapp_open_folder")}>📂 打开网页程序文件夹</button>
+                {webapp.user_active && (
+                  <button onClick={() => void webappInvoke("webapp_reset")} title="删除用户区全部自定义文件，回到随包版本">
+                    ♻ 恢复出厂
+                  </button>
+                )}
+                <button onClick={() => void reloadWebapp()} title="放入文件后点这里看有没有被认到">
+                  🔄 刷新状态
+                </button>
+              </div>
+              {webappMsg && <p className="muted" style={{ margin: "6px 0 0", fontSize: 12 }}>{webappMsg}</p>}
+            </div>
+          )}
         </div>
       )}
 

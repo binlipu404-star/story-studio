@@ -4,8 +4,11 @@
 // - V7-A2 本地代理：127.0.0.1 动态端口，CORS 根治（proxy 模块 + proxy_port 命令）
 // - V7-B1 更新镜像覆盖：app 配置目录下 update-mirror.txt 存在且非空时，
 //   用其中端点整表替换 conf 内嵌端点（GitHub 不通时的自救通道；# 开头为注释）
+// - V7.2-D1 松绑：覆盖注册 tauri 协议，从 用户区→出厂区→内嵌 三层伺服前端
+//   （origin 仍是 http://tauri.localhost，IndexedDB 不动；详见 webapp 模块头注释）
 
 mod proxy;
+mod webapp;
 
 use proxy::ProxyPort;
 use tauri::ipc::Channel;
@@ -86,6 +89,14 @@ async fn updater_update(app: tauri::AppHandle, on_progress: Channel<u64>) -> Res
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
   tauri::Builder::default()
+    // V7.2-D1：抢在内置实现前注册同名协议（内置为条件注册，见 webapp 模块头）
+    .register_asynchronous_uri_scheme_protocol("tauri", |ctx, request, responder| {
+      let app = ctx.app_handle().clone();
+      tauri::async_runtime::spawn(async move {
+        let resp = webapp::serve(&app, &request.uri().to_string());
+        responder.respond(resp);
+      });
+    })
     .plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
       // 二次启动：唤起并聚焦主窗口，而不是开出第二个实例
       if let Some(w) = app.get_webview_window("main") {
@@ -121,7 +132,13 @@ pub fn run() {
         .expect("spawn local-proxy thread");
       Ok(())
     })
-    .invoke_handler(tauri::generate_handler![proxy_port, updater_update])
+    .invoke_handler(tauri::generate_handler![
+      proxy_port,
+      updater_update,
+      webapp::webapp_status,
+      webapp::webapp_open_folder,
+      webapp::webapp_reset
+    ])
     .run(tauri::generate_context!())
     .expect("error while running tauri application");
 }
