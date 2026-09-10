@@ -39,7 +39,6 @@ import {
   LEVEL_NAMES,
   LEVEL_ORDER,
   lineageOf,
-  masterToNodes,
   moveNodePlan,
   preorder,
   STATUS_NAMES as STATUS_LABELS,
@@ -50,6 +49,7 @@ import {
   type DropZone,
   type MasterOutlineJson,
 } from "../flow/outline.js";
+import { planDraftMerge } from "../flow/outlineMerge";
 import { chatJSON } from "../ai/client";
 import { outlineCoachPrompt, sceneBeatsPrompt } from "../ai/prompts";
 import { draftToBookScenes, outlineBookJson, type OutlineBookScene } from "../flow/outlinebook";
@@ -145,6 +145,36 @@ function charactersByNameMap(chars: Character[]): Record<string, string> {
   const m: Record<string, string> = {};
   for (const c of chars) if (c.name) m[c.name] = c.id;
   return m;
+}
+
+/** 弹窗内的合并预览：以草稿为准，列出 更新/新增/保留 三项（纯函数试算，不落库） */
+function MergePreview(props: {
+  nodes: OutlineNode[];
+  draft: MasterOutlineJson | null;
+  projectId: string;
+  characters: Character[];
+}) {
+  const plan = planDraftMerge(props.nodes, props.draft, {
+    projectId: props.projectId,
+    uid: () => "preview", // 预览不落库，id 无所谓
+    charactersByName: charactersByNameMap(props.characters),
+  });
+  if (props.nodes.length === 0) {
+    return (
+      <p style={{ fontSize: 13 }}>
+        当前大纲树是空的：将写入 <b>{plan.stats.created}</b> 个节点（卷/章/幕，状态=草案）。
+      </p>
+    );
+  }
+  return (
+    <p style={{ fontSize: 13 }}>
+      将以草稿为准合并：<b>更新 {plan.stats.updated}</b> · <b>新增 {plan.stats.created}</b> · <b>保留 {plan.stats.kept}</b>
+      <br />
+      <span className="muted" style={{ fontSize: 12 }}>
+        同名卷/章/幕按标题识别后合并更新；草稿没提到的既有节点一律保留、不删除。
+      </span>
+    </p>
+  );
 }
 
 /** draftDiff 的三项是否全 0（=本轮界面未发生创作） */
@@ -411,32 +441,34 @@ export function OutlinePage({ projectId }: { projectId: string }) {
     }
   };
 
-  /** 「应用到大纲树」弹窗确认：bulkAdd 直通 + 可勾选顺手填充这些新空幕 */
+  /** 「应用到大纲树」弹窗确认：以草稿为准合并 + 可勾选顺手填充空白幕 */
   async function applyDraft(fill: boolean) {
     if (!coachDraft) return;
     setAppModal(false);
     try {
-      const mapped = masterToNodes(coachDraft, projectId, {
-        charactersByName: charactersByNameMap(characters),
+      const plan = planDraftMerge(nodes, coachDraft, {
+        projectId,
         uid: repos.uid,
+        charactersByName: charactersByNameMap(characters),
       });
-      if (mapped.nodes.length === 0) {
+      if (plan.creates.length + plan.fieldUpdates.length + plan.orderUpdates.length === 0) {
         setError("草稿里还没有任何卷/幕，先继续访谈再应用。");
         return;
       }
-      await db.outlineNodes.bulkAdd(mapped.nodes);
+      // 三路分发：新建 → 内容修订（revision+1）→ 排序（不动 revision）
+      if (plan.creates.length > 0) await db.outlineNodes.bulkAdd(plan.creates);
+      for (const u of plan.fieldUpdates) await repos.updateNode(u.id, u.patch);
+      await repos.applyMovePlan(plan.orderUpdates);
       const rows = await reload();
-      setWarnings(mapped.warnings);
+      setWarnings(plan.warnings);
       setInfo(
-        `草稿已应用 ${mapped.nodes.length} 个节点（卷/章/幕，状态=草案）。` +
-          (mapped.logline ? `logline：${mapped.logline}` : ""),
+        `已按草稿合并：更新 ${plan.stats.updated} · 新增 ${plan.stats.created} · 保留 ${plan.stats.kept}（草稿未提到的既有节点一律不动）。` +
+          (plan.warnings.length > 0 ? ` ${plan.warnings.length} 条提示见右侧。` : ""),
       );
       if (fill) {
-        const newIds = new Set(
-          mapped.nodes.filter((n) => n.level === "scene" && n.beats.length === 0).map((n) => n.id),
-        );
-        const newScenes = rows.filter((n) => newIds.has(n.id));
-        if (newScenes.length > 0) await fillBeats(newScenes, rows);
+        const ids = new Set(plan.newEmptySceneIds);
+        const targets = rows.filter((n) => ids.has(n.id) && n.beats.length === 0);
+        if (targets.length > 0) await fillBeats(targets, rows);
       }
     } catch (e) {
       setError(errMsg(e));
@@ -1142,7 +1174,7 @@ export function OutlinePage({ projectId }: { projectId: string }) {
               )}
             </div>
             <p className="muted" style={{ fontSize: 12 }}>
-              访谈只定盘子（节拍恒空）。盘子满意后点右侧「应用到大纲树」——弹窗列明细、确认才写入，可顺手为新建的幕生成节拍。
+              访谈只定盘子（节拍恒空）。盘子满意后点右侧「应用到大纲树」——以草稿为准合并：同名卷章幕识别更新、草稿没提的旧节点保留不删，可顺手为空白幕生成节拍。
             </p>
           </div>
 
@@ -1213,9 +1245,7 @@ export function OutlinePage({ projectId }: { projectId: string }) {
         >
           <div className="panel" onClick={(e) => e.stopPropagation()} style={{ maxWidth: 520, width: "92%", maxHeight: "72vh", overflowY: "auto" }}>
             <strong>应用到大纲树</strong>
-            <p style={{ fontSize: 13 }}>
-              将追加 <b>{coachStats.v}</b> 卷 / <b>{coachStats.c}</b> 章 / <b>{coachStats.s}</b> 幕（状态=草案，追加为新卷根节点，不动既有节点）。
-            </p>
+            <MergePreview nodes={nodes} draft={coachDraft} projectId={projectId} characters={characters} />
             <div className="muted" style={{ fontSize: 12, maxHeight: 160, overflowY: "auto" }}>
               {(Array.isArray(coachDraft?.volumes) ? coachDraft?.volumes : []).map((v, vi) => (
                 <div key={vi}>📚 {v?.title?.trim() || `第${vi + 1}卷`}</div>
@@ -1223,7 +1253,7 @@ export function OutlinePage({ projectId }: { projectId: string }) {
             </div>
             <label style={{ display: "flex", gap: 6, alignItems: "center", fontSize: 13, marginTop: 8 }}>
               <input type="checkbox" checked={fillOnApply} onChange={(e) => setFillOnApply(e.target.checked)} />
-              应用后立即为这些新幕生成节拍（AI 串行，可中途停止，已写入保留）
+              应用后立即为空白幕生成节拍（新建的幕 + 命中但尚无节拍的旧幕；AI 串行，可中途停止，已写入保留）
             </label>
             <div className="row" style={{ marginTop: 10 }}>
               <button className="primary" onClick={() => void applyDraft(fillOnApply)}>确认应用</button>
