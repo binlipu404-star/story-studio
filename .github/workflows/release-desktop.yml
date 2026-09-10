@@ -41,7 +41,13 @@ jobs:
         with:
           tagName: v__VERSION__
           releaseName: "Story Studio v__VERSION__"
-          releaseBody: "Windows 桌面版：Story Studio_<版本>_x64-setup.exe（下载即装，自动更新已内置）"
+          releaseBody: |
+            Windows 桌面版：Story Studio_<版本>_x64-setup.exe（下载即装，自动更新已内置）
+
+            本版更新：
+            · 删除剧组不再自动弹出 jsonl 下载（需要留底请点行内「⬇」）
+            · 全本剧组边写大纲边 RP：主纲改动自动感知，横幅细数「改/增/删」，另开窗口改纲也能秒提示
+            · 对话创作「应用到大纲树」升级为智能合并：同名卷章幕识别更新、草稿没提的旧节点保留不删、绝不产生重复章节
           releaseDraft: false
           prerelease: false
           # 只出 NSIS（tauri.conf targets=["nsis"]），此开关为双保险
