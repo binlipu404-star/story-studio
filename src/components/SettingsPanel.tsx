@@ -162,7 +162,7 @@ export function SettingsPanel() {
     setMsg(`已填入本地代理前缀（:${port}）——点「保存设置」生效`);
   }
 
-  // ---------- 自动更新（v7-B1，仅壳内）：动态 import，浏览器版不打进包 ----------
+  // ---------- 自动更新（v7-B1，仅壳内）：动态 invoke，走壳内 updater_update 命令（支持 update-mirror.txt 镜像覆盖） ----------
   const [updMsg, setUpdMsg] = useState("");
   const [updBusy, setUpdBusy] = useState(false);
 
@@ -170,24 +170,18 @@ export function SettingsPanel() {
     setUpdBusy(true);
     setUpdMsg("检查中…");
     try {
-      const { check } = await import("@tauri-apps/plugin-updater");
-      const update = await check();
-      if (!update) {
+      const { invoke, Channel } = await import("@tauri-apps/api/core");
+      const ch = new Channel<number>();
+      ch.onmessage = (got) => setUpdMsg(`下载新版本：已收 ${(got / 1024 / 1024).toFixed(1)} MB…`);
+      const info = await invoke<{ version: string; body: string | null } | null>("updater_update", {
+        onProgress: ch,
+      });
+      if (!info) {
         setUpdMsg("已是最新版本");
         return;
       }
-      setUpdMsg(`发现新版本 ${update.version}，下载中…`);
-      let got = 0;
-      await update.downloadAndInstall((ev) => {
-        if (ev.event === "Progress") {
-          got += ev.data.chunkLength;
-          setUpdMsg(`下载新版本 ${update.version}：已收 ${(got / 1024 / 1024).toFixed(1)} MB…`);
-        } else if (ev.event === "Finished") {
-          setUpdMsg("下载完成，安装中（装完自动重启）…");
-        }
-      });
+      setUpdMsg(`新版本 ${info.version} 安装完成，正在重启…`);
       const { relaunch } = await import("@tauri-apps/plugin-process");
-      setUpdMsg("安装完成，正在重启…");
       await relaunch();
     } catch (e) {
       // 静默失败哲学：GitHub 抽风/镜像未同步都不该堵死用户，如实报一句即可
