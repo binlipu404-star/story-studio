@@ -118,6 +118,18 @@ export default async function (t) {
     t.eq(added.length, 1, "5. 非法不触发副作用");
   }
 
+  // 5a. v8-C·T3-P3 台账防重：同文案（空白归一）拒止且零副作用
+  {
+    const added = [];
+    const canon = [{ id: "g1", projectId: "p", type: "event", content: "A  烧了 信", actors: [], status: "confirmed", createdAt: 1 }];
+    const ctx = { snapshot: snap, progress: {}, canon, onAppendLedger: (it) => added.push(it.content) };
+    const dup = runScriptTool(ctx, "append_ledger", '{"type":"event","content":"A 烧了 信"}');
+    t.ok(dup.result.includes("台账已有同条"), "5a. 同文案拒止（空白归一后比对）");
+    t.eq(added.length, 0, "5a. 重复不触发副作用");
+    t.ok(runScriptTool(ctx, "append_ledger", '{"type":"event","content":"B 到了"}').result.includes("已写入"), "5a. 新文案照写");
+    t.eq(added.length, 1, "5a. 新文案副作用一次");
+  }
+
   // 5b. v8-B set_brief：写入/超长截 150/空文拒止/副作用回调
   {
     const briefs = [];

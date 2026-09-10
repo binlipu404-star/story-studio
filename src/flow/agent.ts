@@ -154,7 +154,7 @@ const SCRIPT_TOOLS_ALL: ToolSpec[] = [
     type: "function",
     function: {
       name: "append_ledger",
-      description: "把对话中已发生、值得长期记住的事实写入本剧组正典台账（宁缺毋滥，一次调用一条）。",
+      description: "把对话中已发生、值得长期记住的事实写入本剧组正典台账（宁缺毋滥，一次调用一条；与已有台账同文案的会被拒）。",
       parameters: {
         type: "object",
         properties: {
@@ -292,6 +292,10 @@ export function runScriptTool(ctx: ScriptCtx, name: string, argsJson: string): T
       const type = types.includes(String(args.type)) ? (args.type as LedgerType) : null;
       const content = typeof args.content === "string" ? args.content.trim() : "";
       if (!type || !content) return { result: "参数不合法：需要 type(event|item|relation|foreshadow|worldstate) 与 content。" };
+      // v8-C·T3-P3 防重：与既有正典同文案（空白归一）即拒止，不重复记也不触发副作用
+      const norm = (s: string) => s.replace(/\s+/g, " ").trim();
+      const dup = ctx.canon.find((r) => norm(r.content) === norm(content));
+      if (dup) return { result: `台账已有同条：「${dup.content}」——不必重复记录，继续别的即可。` };
       const actors = Array.isArray(args.actors) ? args.actors.filter((a): a is string => typeof a === "string" && a.trim() !== "") : [];
       ctx.onAppendLedger?.({ type, content, actors });
       return { result: "已写入本剧组正典台账。" };
