@@ -16,6 +16,7 @@ import { clearAllProgress } from "../flow/progress";
 import { clearPrefs } from "../flow/prefs";
 import { errMsg, downloadText } from "../core/uiUtils";
 import { getProxyPort, isTauri, toProxyUrl } from "../tauriBridge";
+import { RELAY_DEFAULT_PORT, WEB_RELAY_SCRIPT, probeWebRelay } from "../flow/webRelay";
 import { db } from "../store/db";
 import {
   TABLE_NAMES,
@@ -84,6 +85,42 @@ export function SettingsPanel() {
     setInShell(true);
     void getProxyPort().then(setProxyPort);
   }, []);
+
+  // 网页版本地中继（v8-D）：浏览器没有壳内代理——下载单文件 Node 中继本机跑起，
+  // 与壳内同一套 /proxy/<scheme>/<host>/… 地址契约（toProxyUrl 同一函数改写）。
+  const [relayPort, setRelayPort] = useState(String(RELAY_DEFAULT_PORT));
+  const [relayState, setRelayState] = useState<"unknown" | "alive" | "dead">("unknown");
+  const [relayMsg, setRelayMsg] = useState("");
+  useEffect(() => {
+    if (isTauri()) return; // 桌面版有壳内代理，不展示本面板
+    void probeWebRelay(Number(relayPort) || RELAY_DEFAULT_PORT).then((p) => setRelayState(p ? "alive" : "dead"));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  /** 探测按钮：按输入框里的端口打 /health，落状态与提示 */
+  async function probeRelay() {
+    const port = Number(relayPort) || RELAY_DEFAULT_PORT;
+    const ok = await probeWebRelay(port);
+    setRelayState(ok ? "alive" : "dead");
+    setRelayMsg(ok ? `中继在线（:${port}）` : `没探到 :${port} 上的中继——先下载脚本并 node 跑起来`);
+  }
+
+  /** 中继一键：探活 → 两槽位 baseURL 改写为走本机中继（与壳内 fillProxyUrls 同一 toProxyUrl） */
+  async function fillRelayUrls() {
+    const port = Number(relayPort) || RELAY_DEFAULT_PORT;
+    const ok = await probeWebRelay(port);
+    setRelayState(ok ? "alive" : "dead");
+    if (!ok) {
+      setRelayMsg("中继没在跑：先下载脚本、本机 node 跑起来，再点一次（也可直接「下载脚本」看用法）");
+      return;
+    }
+    setCfg((c) => ({
+      ...c,
+      writer: { ...c.writer, baseURL: toProxyUrl(c.writer.baseURL, port) },
+      analyzer: { ...c.analyzer, baseURL: toProxyUrl(c.analyzer.baseURL, port) },
+    }));
+    setRelayMsg(`已填入中继前缀（:${port}）——点「保存设置」生效`);
+  }
 
   function patchEndpoint(role: ChatRole, patch: Partial<ModelEndpoint>) {
     setCfg((c) => ({ ...c, [role]: { ...c[role], ...patch } }));
@@ -434,6 +471,46 @@ export function SettingsPanel() {
               {webappMsg && <p className="muted" style={{ margin: "6px 0 0", fontSize: 12 }}>{webappMsg}</p>}
             </div>
           )}
+        </div>
+      )}
+
+      {/* ---------- 网页版本地中继（浏览器专属）：CORS 根治的第二条路 ---------- */}
+      {!inShell && (
+        <div className="panel">
+          <h3 style={{ marginTop: 0 }}>
+            🌐 跨域代理 <span className="muted" style={{ fontWeight: 400, fontSize: 12 }}>（网页版：网关不回 CORS 头时，浏览器直连必挂——本机跑一个小中继绕开）</span>
+          </h3>
+          <div className="row" style={{ alignItems: "center", flexWrap: "wrap" }}>
+            <span className="muted">
+              中继状态：
+              {relayState === "alive" ? (
+                <b style={{ color: "var(--accent)" }}>● 在线（:{relayPort}）</b>
+              ) : relayState === "dead" ? (
+                <span>○ 未检测到（端口 <input value={relayPort} onChange={(e) => setRelayPort(e.target.value.replace(/\D/g, "").slice(0, 5))} style={{ width: 62 }} /> 可改；改完点「探测」）</span>
+              ) : (
+                <span>未探测</span>
+              )}
+            </span>
+            <button onClick={() => void probeRelay()}>探测</button>
+            <button className="primary" onClick={() => void fillRelayUrls()}>
+              一键把下方 baseURL 改为走本机中继
+            </button>
+            <button onClick={() => downloadText("story-studio-relay.mjs", WEB_RELAY_SCRIPT, "text/javascript;charset=utf-8")} title="单文件零依赖 Node 脚本：本机 node story-studio-relay.mjs 跑起来即可">
+              ⬇ 下载中继脚本
+            </button>
+          </div>
+          {relayMsg && <p className="muted" style={{ margin: "6px 0 0", fontSize: 13 }}>{relayMsg}</p>}
+          <details style={{ marginTop: 6 }}>
+            <summary className="muted" style={{ fontSize: 13, cursor: "pointer" }}>怎么用（三步）</summary>
+            <ol className="muted" style={{ fontSize: 13, margin: "6px 0 0", paddingLeft: 20, lineHeight: 1.7 }}>
+              <li>点「⬇ 下载中继脚本」，存到任意文件夹。</li>
+              <li>装好 Node 18+ 后，在那个文件夹开终端跑：<code>node story-studio-relay.mjs</code>（默认端口 {RELAY_DEFAULT_PORT}，可 <code>node story-studio-relay.mjs 9000</code> 换）。</li>
+              <li>回本页点「探测」→「一键把下方 baseURL 改为走本机中继」→「保存设置」。之后所有 AI 请求经本机转发到网关，跨域问题消失。</li>
+            </ol>
+            <p className="muted" style={{ fontSize: 12, margin: "6px 0 0" }}>
+              中继只监听 127.0.0.1，不解析、不留存任何内容；Key 只在请求头里过路。想彻底免跑脚本：给网关加 CORS 响应头（桌面版则自带代理）。
+            </p>
+          </details>
         </div>
       )}
 
