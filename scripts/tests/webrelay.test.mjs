@@ -1,5 +1,6 @@
-// v8-D Web 版本地中继：解析镜像 + 内嵌脚本不变量
-import { relayParseTarget, WEB_RELAY_SCRIPT, RELAY_DEFAULT_PORT } from "../../dist-test/flow/webRelay.js";
+// v8-D 网页版本地中继：解析镜像 + 脚本/启动器不变量 + 文件版对账
+import { readFileSync } from "node:fs";
+import { relayParseTarget, WEB_RELAY_SCRIPT, WEB_RELAY_BAT, RELAY_DEFAULT_PORT } from "../../dist-test/flow/webRelay.js";
 
 export default async function (t) {
   // 1. URL 解析镜像（与 proxy.rs::parse_target 同语义）
@@ -29,5 +30,25 @@ export default async function (t) {
     t.ok(WEB_RELAY_SCRIPT.includes('listen(PORT, "127.0.0.1"'), "2. 只监听 127.0.0.1");
     t.ok(WEB_RELAY_SCRIPT.includes("upstream.destroy()"), "2. 客户端中断 → 上游停流");
     t.eq(RELAY_DEFAULT_PORT, 8788, "2. 默认端口 8788");
+  }
+
+  // 3. 双击启动器（start-relay.bat）不变量
+  {
+    t.ok(WEB_RELAY_BAT.startsWith("@echo off\r\n"), "3. @echo off 起手 + CRLF");
+    t.ok(!/[^\x00-\x7F]/.test(WEB_RELAY_BAT), "3. 纯 ASCII（cmd 码页安全）");
+    t.ok(WEB_RELAY_BAT.includes('cd /d "%~dp0"'), "3. 切到自身目录");
+    t.ok(WEB_RELAY_BAT.includes("where node"), "3. Node 缺失检测");
+    t.ok(WEB_RELAY_BAT.includes("story-studio-relay.mjs"), "3. 指名脚本");
+    t.ok(WEB_RELAY_BAT.includes("pause"), "3. 出错/退出留窗");
+  }
+
+  // 4. 三方对账：内嵌正源 ↔ 仓库文件版（start-story-studio.bat 拉起的）逐字节一致
+  {
+    const fileSrc = readFileSync(new URL("../../scripts/story-studio-relay.mjs", import.meta.url), "utf8");
+    t.eq(fileSrc, WEB_RELAY_SCRIPT, "4. 文件版与内嵌版逐字节一致（漂移=跑 npm run relay:sync）");
+    // bat 的自动化：启动器存在 + 开发启动器已并线中继
+    const devBat = readFileSync(new URL("../../start-story-studio.bat", import.meta.url), "utf8");
+    t.ok(devBat.includes("story-studio-relay.mjs"), "4. start-story-studio.bat 并线中继");
+    t.ok(devBat.includes('":8788"'), "4. 并线版有端口查重（不双起）");
   }
 }

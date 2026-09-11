@@ -11,6 +11,7 @@
     "build:logic": "tsc -p tsconfig.logic.json",
     "test:logic": "npm run build:logic && node scripts/run-tests.mjs",
     "test:fixtures": "npm run build:logic && node scripts/probe-fixtures.mjs",
+    "relay:sync": "npm run build:logic && node scripts/extract-relay.mjs",
     "desktop:dev": "tauri dev",
     "desktop:build": "tauri build"
   },

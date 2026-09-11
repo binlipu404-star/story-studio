@@ -14,9 +14,10 @@ import {
 import { chat, type ChatRole } from "../ai/client";
 import { clearAllProgress } from "../flow/progress";
 import { clearPrefs } from "../flow/prefs";
-import { errMsg, downloadText } from "../core/uiUtils";
+import { errMsg, downloadText, downloadBlob } from "../core/uiUtils";
 import { getProxyPort, isTauri, toProxyUrl } from "../tauriBridge";
-import { RELAY_DEFAULT_PORT, WEB_RELAY_SCRIPT, probeWebRelay } from "../flow/webRelay";
+import { RELAY_DEFAULT_PORT, WEB_RELAY_SCRIPT, WEB_RELAY_BAT, probeWebRelay } from "../flow/webRelay";
+import { buildZip } from "../flow/zip";
 import { db } from "../store/db";
 import {
   TABLE_NAMES,
@@ -495,20 +496,34 @@ export function SettingsPanel() {
             <button className="primary" onClick={() => void fillRelayUrls()}>
               一键把下方 baseURL 改为走本机中继
             </button>
-            <button onClick={() => downloadText("story-studio-relay.mjs", WEB_RELAY_SCRIPT, "text/javascript;charset=utf-8")} title="单文件零依赖 Node 脚本：本机 node story-studio-relay.mjs 跑起来即可">
-              ⬇ 下载中继脚本
+            <button
+              className="primary"
+              onClick={() =>
+                downloadBlob(
+                  "story-studio-relay.zip",
+                  buildZip([
+                    { name: "story-studio-relay.mjs", text: WEB_RELAY_SCRIPT },
+                    { name: "start-relay.bat", text: WEB_RELAY_BAT },
+                  ]),
+                )
+              }
+              title="含中继脚本 + 双击启动器 start-relay.bat：解压后双击即可，不用开终端"
+            >
+              ⬇ 下载中继包（含双击启动器）
             </button>
           </div>
           {relayMsg && <p className="muted" style={{ margin: "6px 0 0", fontSize: 13 }}>{relayMsg}</p>}
           <details style={{ marginTop: 6 }}>
             <summary className="muted" style={{ fontSize: 13, cursor: "pointer" }}>怎么用（三步）</summary>
             <ol className="muted" style={{ fontSize: 13, margin: "6px 0 0", paddingLeft: 20, lineHeight: 1.7 }}>
-              <li>点「⬇ 下载中继脚本」，存到任意文件夹。</li>
-              <li>装好 Node 18+ 后，在那个文件夹开终端跑：<code>node story-studio-relay.mjs</code>（默认端口 {RELAY_DEFAULT_PORT}，可 <code>node story-studio-relay.mjs 9000</code> 换）。</li>
+              <li>点「⬇ 下载中继包」，把 zip <b>解压</b>到任意文件夹。</li>
+              <li><b>双击 start-relay.bat</b>——黑窗口留着=中继在跑（需装过 <a href="https://nodejs.org/zh-cn" target="_blank" rel="noreferrer">Node 18+</a>；窗口提示装 Node 就照它装一次，以后永远只用双击）。关窗口=停中继。</li>
               <li>回本页点「探测」→「一键把下方 baseURL 改为走本机中继」→「保存设置」。之后所有 AI 请求经本机转发到网关，跨域问题消失。</li>
             </ol>
             <p className="muted" style={{ fontSize: 12, margin: "6px 0 0" }}>
-              中继只监听 127.0.0.1，不解析、不留存任何内容；Key 只在请求头里过路。想彻底免跑脚本：给网关加 CORS 响应头（桌面版则自带代理）。
+              浏览器被安全模型禁止直接启动本机程序，所以最后一步必须您双击——这是自动化能到的极限。
+              想连双击都省掉：① 用桌面版（代理内置，永远不用管）；② 给网关加 CORS 响应头（服务器上一条 nginx 配置，一次永久）。
+              中继只监听 127.0.0.1，不解析、不留存任何内容；Key 只在请求头里过路。
             </p>
           </details>
         </div>

@@ -32,6 +32,19 @@ if not exist "node_modules\" (
   )
 )
 
+rem Local CORS relay for the Web build (same script the settings page offers to
+rem download). Fresh build wins over the tracked copy when dist-test exists.
+rem Placed BEFORE the 5199 check so re-launching while the server runs still
+rem tops up a missing relay window.
+if exist "dist-test\flow\webRelay.js" node scripts/extract-relay.mjs >nul 2>nul
+netstat -ano | findstr ":8788" | findstr "LISTENING" >nul 2>nul
+if not errorlevel 1 (
+  echo [INFO] Relay already listening on 8788 - skipping.
+) else (
+  start "Story Studio Relay" cmd /k node "%APP_DIR%scripts\story-studio-relay.mjs" 8788
+  echo [INFO] Relay window opened on http://127.0.0.1:8788 - closing that window stops the relay.
+)
+
 rem Already running? Just open the browser.
 netstat -ano | findstr ":5199" | findstr "LISTENING" >nul 2>nul
 if not errorlevel 1 (
@@ -44,6 +57,7 @@ echo.
 echo   Starting Story Studio at  http://localhost:5199/
 echo   (This window IS the server. Close it or press Ctrl+C to stop.)
 echo.
+
 start "" cmd /c "timeout /t 2 /nobreak >nul & start http://localhost:5199/"
 call npm run dev -- --port 5199 --strictPort
 pause
