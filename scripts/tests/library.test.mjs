@@ -5,6 +5,8 @@ import {
   toggleSelected,
   pruneSelection,
   usedSelectedCount,
+  toggleBookIds,
+  bookSelState,
 } from "../../dist-test/flow/library.js";
 
 export default async function (t) {
@@ -58,4 +60,16 @@ export default async function (t) {
   // 8. usedSelectedCount：只数存活的选用
   t.eq(usedSelectedCount(["c", "ghost"], ["a", "c", "d"]), 1, "8. 悬空不计数");
   t.eq(usedSelectedCount(undefined, ["a"]), 0, "8. 无选用 = 0");
+
+  // 9. v8-D3 整本勾选：toggleBookIds 并入/移出，结果 id 升序（顺序契约）
+  t.eq(toggleBookIds(["e2"], ["e1", "e3"], true).join(","), "e1,e2,e3", "9. 整本并入且升序");
+  t.eq(toggleBookIds(["e1", "e2", "e3"], ["e1", "e3"], false).join(","), "e2", "9. 整本移出");
+  t.eq(toggleBookIds(["e1"], ["e1"], true).join(","), "e1", "9. 重复并入幂等");
+  t.eq(toggleBookIds([], [], true).length, 0, "9. 空书并入空操作");
+
+  // 10. v8-D3 bookSelState 三态：UI 画 indeterminate 的依据
+  const sel = new Set(["e1", "e2"]);
+  t.eq(bookSelState(["e1", "e2"], sel), "all", "10. 全中=all");
+  t.eq(bookSelState(["e2", "e3"], sel), "some", "10. 半中=some");
+  t.eq(bookSelState(["e3", "e4"], sel), "none", "10. 不中=none");
 }

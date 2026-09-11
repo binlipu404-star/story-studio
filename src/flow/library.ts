@@ -139,3 +139,24 @@ export function legacySelection(
   const cur = project.loreBookIds ?? [];
   return cur.includes(legacyBookId) ? cur : [legacyBookId, ...cur];
 }
+
+// ---------- 访谈辅助选材：世界书按整本勾选（v8-D3，纯函数可测） ----------
+
+/**
+ * 整本勾选/取消：把某书全部词条 id 并入/移出已选集。
+ * 结果按 id 升序（选材的顺序契约：id 升序存储 → 注入块字节稳定，前缀缓存可命中）。
+ */
+export function toggleBookIds(selected: ID[], bookEntryIds: ID[], on: boolean): ID[] {
+  const set = new Set(selected);
+  if (on) for (const id of bookEntryIds) set.add(id);
+  else for (const id of bookEntryIds) set.delete(id);
+  return [...set].sort();
+}
+
+/** 整本勾选三态：该书页全在已选=all，一条都没有=none，其余=some（UI 画 indeterminate）。 */
+export function bookSelState(bookEntryIds: ID[], selected: Set<ID>): "all" | "some" | "none" {
+  let hit = 0;
+  for (const id of bookEntryIds) if (selected.has(id)) hit++;
+  if (hit === 0) return "none";
+  return hit === bookEntryIds.length ? "all" : "some";
+}

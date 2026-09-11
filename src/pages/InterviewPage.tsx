@@ -8,6 +8,7 @@
 import { useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import type { BibleField, BibleFieldStatus, BibleRevision, ChatMessage, Character, LoreEntry, Persona, Project } from "../core/types";
 import * as repos from "../store/repos";
+import { bookSelState, toggleBookIds } from "../flow/library";
 import { errMsg, isAbort } from "../core/uiUtils";
 import { bibleProgress, firstFocus, mergeBibleUpdates } from "../flow/interview.js";
 import {
@@ -145,6 +146,7 @@ export function InterviewPage({ projectId }: { projectId: string }) {
   // ---- v3.2 辅助选材：勾选的人物卡/世界书词条/用户人设（id 数组，升序存储） ----
   const [allChars, setAllChars] = useState<Character[]>([]);
   const [allLore, setAllLore] = useState<LoreEntry[]>([]);
+  const [allBooks, setAllBooks] = useState<{ id: string; name: string }[]>([]); // v8-D3 世界书整本勾选用
   const [allPersonas, setAllPersonas] = useState<Persona[]>([]);
   const [matsError, setMatsError] = useState<string | null>(null);
   // 勾选集合按 id 升序存（顺序=注入顺序，与点选先后无关 → 提示词字节稳定，缓存可命中）
@@ -185,18 +187,21 @@ export function InterviewPage({ projectId }: { projectId: string }) {
     let alive = true;
     setAllChars([]);
     setAllLore([]);
+    setAllBooks([]);
     setMatsError(null);
     void (async () => {
       try {
-        const [chars, lore, personas] = await Promise.all([
+        const [chars, lore, personas, books] = await Promise.all([
           repos.listCharacters(projectId),
           repos.listLoreEntries(projectId),
           repos.listPersonas(),
+          repos.listLoreBooks(),
         ]);
         if (!alive) return;
         setAllChars(chars);
         setAllLore(lore);
         setAllPersonas(personas);
+        setAllBooks(books.map((b) => ({ id: b.id, name: b.name || "（未命名书）" })));
       } catch (e) {
         if (alive) setMatsError(errMsg(e));
       }
@@ -338,6 +343,24 @@ export function InterviewPage({ projectId }: { projectId: string }) {
   const [matsOpen, setMatsOpen] = useState(false);
   const [matsQ, setMatsQ] = useState(""); // 三列共用一个过滤词（够用且省三个 state）
   const matsFilter = (label: string) => !matsQ || label.toLowerCase().includes(matsQ.toLowerCase());
+  // v8-D3 世界书列按书分组：书名取书本体（散装/无书归「（未归册）」），书序=候选里首见序
+  const loreGroups = useMemo(() => {
+    const byBook = new Map<string, LoreEntry[]>();
+    for (const e of allLore) {
+      const bid = e.bookId ?? "";
+      const list = byBook.get(bid) ?? [];
+      list.push(e);
+      byBook.set(bid, list);
+    }
+    const nameOf = new Map(allBooks.map((b) => [b.id, b.name]));
+    return [...byBook.entries()].map(([bid, entries]) => ({
+      bookId: bid || "__none__",
+      name: (bid && nameOf.get(bid)) || "（未归册）",
+      entries,
+      entryIds: entries.map((e) => e.id),
+    }));
+  }, [allLore, allBooks]);
+  const selBookCount = (ids: string[], set: Set<string>) => ids.reduce((n, id) => n + (set.has(id) ? 1 : 0), 0);
 
   // firstFocus = 当前问题焦点行；若「最近一轮未采纳的提案」已覆盖它，则高亮让位给提案卡
   const focus = firstFocus(fields);
@@ -660,7 +683,6 @@ export function InterviewPage({ projectId }: { projectId: string }) {
                 <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(160px, 1fr))", gap: 10, marginTop: 8, fontSize: 13 }}>
                   {[
                     { kind: "chars" as const, title: "人物卡", empty: "人物库为空", items: allChars.map((c): { id: string; label: string; hint?: string } => ({ id: c.id, label: c.name || "（未命名）" })) },
-                    { kind: "lore" as const, title: "世界书词条", empty: "世界书为空", items: allLore.map((e): { id: string; label: string; hint?: string } => ({ id: e.id, label: e.comment || "（未命名）", hint: e.constant ? "常驻" : e.keys.slice(0, 3).join("/") })) },
                     { kind: "personas" as const, title: "用户人设", empty: "人设库为空", items: allPersonas.map((p): { id: string; label: string; hint?: string } => ({ id: p.id, label: p.name || "（未命名）" })) },
                   ].map((col) => {
                     const items = col.items.filter((it) => matsFilter(it.label));
@@ -672,7 +694,7 @@ export function InterviewPage({ projectId }: { projectId: string }) {
                         ) : items.length === 0 ? (
                           <p className="muted" style={{ fontSize: 12, margin: "4px 0" }}>无匹配（{matsQ}）</p>
                         ) : (
-                          <div style={{ maxHeight: 140, overflowY: "auto", marginTop: 4 }}>
+                          <div style={{ maxHeight: 180, overflowY: "auto", marginTop: 4 }}>
                             {items.map((it) => (
                               <label key={it.id} style={{ display: "block", cursor: "pointer", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
                                 <input
@@ -690,6 +712,45 @@ export function InterviewPage({ projectId }: { projectId: string }) {
                       </div>
                     );
                   })}
+                  {/* v8-D3 世界书列：按整本勾选（书头三态全选），词条仍可散勾 */}
+                  <div style={{ minWidth: 0 }}>
+                    <strong style={{ fontSize: 12 }}>世界书词条</strong>
+                    {allLore.length === 0 ? (
+                      <p className="muted" style={{ fontSize: 12, margin: "4px 0" }}>世界书为空</p>
+                    ) : (
+                      <div style={{ maxHeight: 180, overflowY: "auto", marginTop: 4 }}>
+                        {loreGroups.map((g) => {
+                          const st = bookSelState(g.entryIds, selSets.lore);
+                          const shown = g.entries.filter((e) => matsFilter(g.name) || matsFilter(e.comment || "（未命名）"));
+                          if (shown.length === 0) return null;
+                          return (
+                            <div key={g.bookId} style={{ marginBottom: 4 }}>
+                              <label style={{ display: "block", cursor: "pointer", fontWeight: 600, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }} title="整本勾选/取消">
+                                <input
+                                  type="checkbox"
+                                  ref={(cb) => { if (cb) cb.indeterminate = st === "some"; }}
+                                  checked={st === "all"}
+                                  disabled={streaming}
+                                  onChange={(e) => setSel((s) => ({ ...s, lore: toggleBookIds(s.lore, g.entryIds, e.target.checked) }))}
+                                />{" "}
+                                📖 {g.name}
+                                <span className="muted"> ({selBookCount(g.entryIds, selSets.lore)}/{g.entryIds.length})</span>
+                              </label>
+                              <div style={{ paddingLeft: 14 }}>
+                                {shown.map((e) => (
+                                  <label key={e.id} style={{ display: "block", cursor: "pointer", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+                                    <input type="checkbox" checked={selSets.lore.has(e.id)} disabled={streaming} onChange={() => toggleSel("lore", e.id)} />{" "}
+                                    {e.comment || "（未命名）"}
+                                    <span className="muted"> · {e.constant ? "常驻" : e.keys.slice(0, 3).join("/")}</span>
+                                  </label>
+                                ))}
+                              </div>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    )}
+                  </div>
                 </div>
               </>
             )}
