@@ -1,6 +1,6 @@
 [package]
 name = "story-studio"
-version = "0.1.3"
+version = "0.1.4"
 description = "Story Studio · AI 小说创作（桌面壳）"
 authors = ["cafero"]
 license = ""
